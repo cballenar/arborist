@@ -1,0 +1,487 @@
+#!/usr/bin/env bash
+# Core CLI for Gar (Git Arborist)
+
+set -e
+
+COMMAND=${1:-}
+
+# Handle help command before stdout redirection so output goes to stdout
+if [ "$COMMAND" = "-h" ] || [ "$COMMAND" = "--help" ] || [ "$COMMAND" = "help" ] || [ -z "$COMMAND" ]; then
+    cat << 'EOF'
+Git Arborist (gar) - Multi-worktree workspace manager
+
+Usage:
+  gar <command> [arguments]
+
+Commands:
+  init <repo_url> <dir>    Initialize a new Hub and provision baseline worktree
+  switch [-c] <branch>     Switch to an existing worktree or create (-c) a new one
+  -m [old_branch] <new>    Move/rename a worktree, branch, and database
+  remove <branch>          Remove a worktree, branch, and drop isolated database
+  sync-ddev                Synchronize Hub .ddev config from tracking branch
+  hook                     Output shell integration hook for eval
+  -h, --help, help         Show this help message
+
+Examples:
+  gar init git@github.com:org/repo.git my-project
+  gar switch feature-branch
+  gar switch -c new-feature
+  gar -m new-feature-name
+  gar remove old-feature
+EOF
+    exit 0
+fi
+
+# Handle 'hook' command before stdout redirection so eval "$(gar hook)" captures the shell definition
+if [ "$COMMAND" = "hook" ]; then
+    BIN_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+    cat << EOF
+# Git Arborist (gar) shell integration
+gar() {
+    if [ "\$1" = "switch" ] || [ "\$1" = "-m" ]; then
+        local _cmd="\$1"
+        shift
+        local _target_path
+        _target_path="\$("$BIN_PATH" "\$_cmd" "\$@")"
+        local _exit_code=\$?
+        if [ \$_exit_code -eq 0 ] && [ -n "\$_target_path" ] && [ -d "\$_target_path" ]; then
+            cd "\$_target_path" || return 1
+        fi
+        return \$_exit_code
+    else
+        "$BIN_PATH" "\$@"
+    fi
+}
+alias arborist="gar"
+EOF
+    exit 0
+fi
+
+# Redirect all normal output to stderr so stdout can be used purely for cd paths
+exec 3>&1
+exec 1>&2
+
+if [ -n "$COMMAND" ]; then
+    shift
+fi
+
+# Where this script is located so we can find templates/
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+TEMPLATES_DIR=$(dirname "$SCRIPT_DIR")/templates
+
+function log() {
+    echo -e "$@"
+}
+
+function error_exit() {
+    log "\033[31mError:\033[0m $1"
+    exit 1
+}
+
+function check_hub_dir() {
+    HUB_DIR=$PWD
+    while [ "$HUB_DIR" != "/" ]; do
+        if [ -d "$HUB_DIR/.git" ] && [ -d "$HUB_DIR/.ddev" ] || [ -f "$HUB_DIR/.arborist" ]; then
+            break
+        fi
+        HUB_DIR=$(dirname "$HUB_DIR")
+    done
+
+    if [ "$HUB_DIR" == "/" ]; then
+        error_exit "Not inside a gar hub. Could not find .git and config together."
+    fi
+    echo "$HUB_DIR"
+}
+
+function cmd_init() {
+    REPO_URL=$1
+    HUB_DIR_ARG=$2
+
+    if [ -z "$REPO_URL" ] || [ -z "$HUB_DIR_ARG" ]; then
+        error_exit "Usage: gar init <repo_url> <hub_dir>"
+    fi
+
+    log "Initializing Arborist Hub in $HUB_DIR_ARG..."
+    mkdir -p "$HUB_DIR_ARG"
+    cd "$HUB_DIR_ARG"
+
+    # Clone as bare repository into .git
+    git clone --bare "$REPO_URL" .git
+    
+    # Analyze HEAD
+    FILES=$(git ls-tree --name-only HEAD)
+    
+    # 1. Environment Selection
+    HAS_DDEV=$(echo "$FILES" | grep -E "^\.ddev$" || true)
+    HAS_LANDO=$(echo "$FILES" | grep -E "^\.lando\.yml$" || true)
+    HAS_DOCKER=$(echo "$FILES" | grep -E "^docker-compose\.yml$" || true)
+    
+    ENV_ENGINE=""
+    if [ "$GAR_AUTO_YES" == "true" ]; then
+        ENV_ENGINE="ddev"
+    else
+        log "Detected environments: "
+        [ -n "$HAS_DDEV" ] && log " - DDEV"
+        [ -n "$HAS_LANDO" ] && log " - Lando"
+        [ -n "$HAS_DOCKER" ] && log " - Docker"
+        
+        echo "Which environment engine will this Hub use?"
+        # Standardize select prompt
+        PS3="Select engine (1-3): "
+        select env_opt in "DDEV" "Lando" "Docker"; do
+            case $env_opt in
+                DDEV ) ENV_ENGINE="ddev"; break;;
+                Lando ) ENV_ENGINE="lando"; break;;
+                Docker ) ENV_ENGINE="docker"; break;;
+            esac
+        done </dev/tty
+    fi
+
+    log "Extracting environment configuration to the hub..."
+    if [ "$ENV_ENGINE" == "ddev" ]; then
+        git archive HEAD .ddev/ | tar -x >/dev/null 2>&1 || true
+    elif [ "$ENV_ENGINE" == "lando" ]; then
+        git archive HEAD .lando.yml | tar -x >/dev/null 2>&1 || true
+        git archive HEAD .lando/ | tar -x >/dev/null 2>&1 || true
+    elif [ "$ENV_ENGINE" == "docker" ]; then
+        git archive HEAD docker-compose.yml | tar -x >/dev/null 2>&1 || true
+    fi
+
+    # 2. Sparse-Checkout Rules
+    SPARSE_EXCLUDES="!/.ddev/ !/.lando.yml !/.lando/ !/docker-compose.yml"
+    if [ "$GAR_AUTO_YES" != "true" ]; then
+        read -p "Any other heavy directories to exclude from all worktrees? (comma-separated, e.g., docs,tests) [none]: " extra_sparse </dev/tty || true
+        if [ -n "$extra_sparse" ]; then
+            IFS=',' read -ra ADDR <<< "$extra_sparse"
+            for i in "${ADDR[@]}"; do
+                dir=$(echo "$i" | xargs) # trim whitespace
+                SPARSE_EXCLUDES="$SPARSE_EXCLUDES !/$dir/"
+            done
+        fi
+    fi
+
+    # 3. Webroot & Framework
+    GUESS_WEBROOT="docroot"
+    if echo "$FILES" | grep -E "^web$" >/dev/null; then GUESS_WEBROOT="web"; fi
+    if echo "$FILES" | grep -E "^public$" >/dev/null; then GUESS_WEBROOT="public"; fi
+    
+    if [ "$GAR_AUTO_YES" == "true" ]; then
+        WEBROOT=$GUESS_WEBROOT
+    else
+        read -p "Where is the public webroot? (Detected: '$GUESS_WEBROOT') [$GUESS_WEBROOT]: " input_webroot </dev/tty || true
+        WEBROOT=${input_webroot:-$GUESS_WEBROOT}
+    fi
+    
+    FRAMEWORK="unknown"
+    if [ -f "$WEBROOT/sites/default/settings.php" ] || git ls-tree --name-only HEAD "$WEBROOT/sites/default/settings.php" >/dev/null 2>&1; then
+        FRAMEWORK="drupal"
+        log "Detected framework: Drupal"
+    fi
+
+    # Write Arborist config
+    cat <<EOF > .arborist
+ENV_ENGINE=$ENV_ENGINE
+WEBROOT=$WEBROOT
+FRAMEWORK=$FRAMEWORK
+SPARSE_EXCLUDES="$SPARSE_EXCLUDES"
+EOF
+
+    # 4. Permanent Branches
+    DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' || true)
+    if [ -z "$DEFAULT_BRANCH" ]; then
+        DEFAULT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "develop")
+    fi
+    if [ "$DEFAULT_BRANCH" == "HEAD" ] || [ -z "$DEFAULT_BRANCH" ]; then
+        DEFAULT_BRANCH="develop"
+    fi
+
+    if [ "$GAR_AUTO_YES" != "true" ]; then
+        read -p "What is the main tracking branch? (Detected: '$DEFAULT_BRANCH') [$DEFAULT_BRANCH]: " MAIN_BRANCH </dev/tty || true
+        DEFAULT_BRANCH=${MAIN_BRANCH:-$DEFAULT_BRANCH}
+    fi
+
+    log "Provisioning main worktree ($DEFAULT_BRANCH)..."
+    git worktree add "$DEFAULT_BRANCH" "$DEFAULT_BRANCH"
+    
+    cd "$DEFAULT_BRANCH"
+    git sparse-checkout set --no-cone '/*' $SPARSE_EXCLUDES
+    
+    if [ "$FRAMEWORK" == "drupal" ]; then
+        if [ "$GAR_AUTO_YES" == "true" ] || { read -p "Auto-inject Arborist DB routing into $WEBROOT/sites/default/settings.local.php? [Y/n]: " inject_db </dev/tty && [[ "${inject_db:-Y}" =~ ^[Yy]$ ]]; }; then
+            log "Injecting settings.workspace.php..."
+            mkdir -p "$WEBROOT/sites/default"
+            cp "$TEMPLATES_DIR/settings.workspace.php" "$WEBROOT/sites/default/"
+            touch "$WEBROOT/sites/default/settings.local.php"
+            if ! grep -q "settings.workspace.php" "$WEBROOT/sites/default/settings.local.php"; then
+                echo "" >> "$WEBROOT/sites/default/settings.local.php"
+                echo "require __DIR__ . '/settings.workspace.php';" >> "$WEBROOT/sites/default/settings.local.php"
+            fi
+        fi
+    fi
+    cd ..
+
+    if [ "$ENV_ENGINE" == "ddev" ]; then
+        log "Injecting wildcard Nginx config..."
+        mkdir -p .ddev/nginx_full
+        # Dynamically inject the webroot into the nginx template
+        sed "s|/var/www/html/\$active_branch/docroot|/var/www/html/\$active_branch/$WEBROOT|g" "$TEMPLATES_DIR/workspace-nginx.conf" > .ddev/nginx_full/workspace-nginx.conf
+    fi
+
+    if [ "$GAR_AUTO_YES" != "true" ]; then
+        read -p "Any other permanent worktrees to provision now? (comma-separated) [none]: " extra_branches </dev/tty || true
+        if [ -n "$extra_branches" ]; then
+            IFS=',' read -ra ADDR <<< "$extra_branches"
+            for i in "${ADDR[@]}"; do
+                b=$(echo "$i" | xargs)
+                log "Provisioning extra branch: $b"
+                git worktree add "$b" "$b" || git worktree add "$b" -b "$b"
+                cd "$b"
+                git sparse-checkout set --no-cone '/*' $SPARSE_EXCLUDES
+                cd ..
+            done
+        fi
+    fi
+
+    log "\nArborist hub initialized successfully."
+    log "You can now start your environment at the hub root."
+}
+
+function cmd_switch() {
+    CREATE_FLAG=0
+    BRANCH=""
+
+    if [ "$1" == "-c" ]; then
+        CREATE_FLAG=1
+        BRANCH=$2
+    else
+        BRANCH=$1
+    fi
+
+    if [ -z "$BRANCH" ]; then
+        error_exit "Usage: gar switch [-c] <branch>"
+    fi
+
+    HUB_DIR=$(check_hub_dir)
+    cd "$HUB_DIR"
+    
+    source "$HUB_DIR/.arborist" 2>/dev/null || SPARSE_EXCLUDES="!/.ddev/ !/.lando.yml !/.lando/ !/docker-compose.yml"
+    ENV_ENGINE=${ENV_ENGINE:-ddev}
+
+    if [ -d "$BRANCH" ]; then
+        log "Worktree '$BRANCH' already exists."
+        echo "$HUB_DIR/$BRANCH" >&3
+        exit 0
+    fi
+
+    if [ $CREATE_FLAG -eq 1 ]; then
+        log "Creating new worktree for '$BRANCH'..."
+        git worktree add "$BRANCH" -b "$BRANCH"
+        
+        cd "$BRANCH"
+        git sparse-checkout set --no-cone '/*' $SPARSE_EXCLUDES
+        cd ..
+        
+        log "Worktree provisioned."
+        
+        if [ "$GAR_AUTO_YES" == "true" ]; then
+            create_db="y"
+            log "Auto-confirming database creation for tests."
+        else
+            read -p "Create an isolated database for this branch? [y/N]: " create_db </dev/tty || true
+        fi
+        create_db=${create_db:-N}
+        
+        if [[ "$create_db" =~ ^[Yy]$ ]]; then
+            if [ "$ENV_ENGINE" == "ddev" ]; then
+                log "Cloning default database into db_$BRANCH..."
+                ddev mysql -e "CREATE DATABASE IF NOT EXISTS \`db_$BRANCH\`;" || true
+                ddev export-db --database=db | ddev import-db --database=db_$BRANCH
+                log "Isolated database db_$BRANCH ready."
+            else
+                log "Automated database cloning for $ENV_ENGINE is not yet implemented."
+            fi
+        else
+            log "Using default shared database."
+        fi
+
+        echo "$HUB_DIR/$BRANCH" >&3
+    else
+        # Try to checkout existing branch
+        git worktree add "$BRANCH" "$BRANCH"
+        cd "$BRANCH"
+        git sparse-checkout set --no-cone '/*' $SPARSE_EXCLUDES
+        cd ..
+        
+        log "Checked out existing branch into worktree '$BRANCH'."
+        echo "$HUB_DIR/$BRANCH" >&3
+    fi
+}
+
+function cmd_remove() {
+    BRANCH=$1
+    if [ -z "$BRANCH" ]; then
+        error_exit "Usage: gar remove <branch>"
+    fi
+
+    HUB_DIR=$(check_hub_dir)
+    cd "$HUB_DIR"
+    
+    source "$HUB_DIR/.arborist" 2>/dev/null || true
+    ENV_ENGINE=${ENV_ENGINE:-ddev}
+
+    if [ ! -d "$BRANCH" ]; then
+        error_exit "Worktree '$BRANCH' not found in $HUB_DIR."
+    fi
+
+    if [ "$GAR_AUTO_YES" == "true" ]; then
+        drop_db="y"
+        log "Auto-confirming database drop for tests."
+    else
+        read -p "Drop the isolated database (db_$BRANCH) if it exists? [Y/n]: " drop_db </dev/tty || true
+    fi
+    drop_db=${drop_db:-Y}
+
+    log "Removing worktree '$BRANCH'..."
+    git worktree remove --force "$BRANCH"
+    git branch -D "$BRANCH" || true
+    
+    if [[ "$drop_db" =~ ^[Yy]$ ]]; then
+        if [ "$ENV_ENGINE" == "ddev" ]; then
+            log "Dropping database db_$BRANCH..."
+            ddev mysql -e "DROP DATABASE IF EXISTS \`db_$BRANCH\`;" || true
+        else
+            log "Automated database dropping for $ENV_ENGINE is not yet implemented."
+        fi
+    fi
+
+    log "Worktree '$BRANCH' dropped."
+}
+
+function cmd_sync_ddev() {
+    HUB_DIR=$(check_hub_dir)
+    cd "$HUB_DIR"
+    
+    source "$HUB_DIR/.arborist" 2>/dev/null || true
+    ENV_ENGINE=${ENV_ENGINE:-ddev}
+    
+    if [ "$ENV_ENGINE" != "ddev" ]; then
+        log "sync-ddev is specifically for DDEV environments."
+        exit 0
+    fi
+    
+    log "Syncing .ddev configuration from the tracking branch..."
+    # Extract cleanly from tracking branch (usually develop or main)
+    DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' || true)
+    if [ -z "$DEFAULT_BRANCH" ]; then
+        DEFAULT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "develop")
+    fi
+    if [ "$DEFAULT_BRANCH" == "HEAD" ] || [ -z "$DEFAULT_BRANCH" ]; then
+        DEFAULT_BRANCH="develop"
+    fi
+    
+    git archive "$DEFAULT_BRANCH" .ddev/ | tar -x || true
+    
+    log ".ddev synced successfully. Restarting DDEV..."
+    ddev restart
+}
+
+function cmd_m() {
+    if [ -z "$1" ]; then
+        error_exit "Usage: gar -m [old_branch] <new_branch>"
+    fi
+
+    if [ -z "$2" ]; then
+        NEW_BRANCH=$1
+        OLD_BRANCH=$(basename "$PWD")
+    else
+        OLD_BRANCH=$1
+        NEW_BRANCH=$2
+    fi
+
+    HUB_DIR=$(check_hub_dir)
+    
+    if [ "$OLD_BRANCH" == "$(basename "$HUB_DIR")" ]; then
+         error_exit "Cannot infer worktree name from the hub root. Please run from inside a worktree or specify the old branch explicitly."
+    fi
+
+    cd "$HUB_DIR"
+    
+    source "$HUB_DIR/.arborist" 2>/dev/null || true
+    ENV_ENGINE=${ENV_ENGINE:-ddev}
+
+    if [ ! -d "$OLD_BRANCH" ]; then
+        error_exit "Worktree '$OLD_BRANCH' does not exist."
+    fi
+
+    if [ -d "$NEW_BRANCH" ]; then
+        error_exit "Target directory '$NEW_BRANCH' already exists."
+    fi
+
+    if [ "$GAR_AUTO_YES" == "true" ]; then
+        confirm_move="y"
+    else
+        read -p "Are you sure you want to move worktree '$OLD_BRANCH' to '$NEW_BRANCH'? [y/N]: " confirm_move </dev/tty || true
+    fi
+    confirm_move=${confirm_move:-N}
+    
+    if [[ ! "$confirm_move" =~ ^[Yy]$ ]]; then
+        log "Move cancelled."
+        exit 0
+    fi
+
+    log "Moving worktree and branch from '$OLD_BRANCH' to '$NEW_BRANCH'..."
+    
+    # Move physical directory
+    mv "$OLD_BRANCH" "$NEW_BRANCH"
+    
+    # Repair git worktree paths
+    git worktree repair "$NEW_BRANCH" > /dev/null 2>&1 || true
+    
+    # Move/mirror git branch
+    git branch -m "$OLD_BRANCH" "$NEW_BRANCH"
+    
+    if [ "$GAR_AUTO_YES" == "true" ]; then
+        move_db="y"
+    else
+        read -p "Did this branch have an isolated database (db_$OLD_BRANCH) that needs to be moved? [y/N]: " move_db </dev/tty || true
+    fi
+    move_db=${move_db:-N}
+
+    if [[ "$move_db" =~ ^[Yy]$ ]]; then
+        if [ "$ENV_ENGINE" == "ddev" ]; then
+            log "Migrating database from db_$OLD_BRANCH to db_$NEW_BRANCH..."
+            ddev mysql -e "CREATE DATABASE IF NOT EXISTS \`db_$NEW_BRANCH\`;" || true
+            ddev export-db --database="db_$OLD_BRANCH" | ddev import-db --database="db_$NEW_BRANCH"
+            ddev mysql -e "DROP DATABASE \`db_$OLD_BRANCH\`;" || true
+            log "Database migrated successfully."
+        else
+            log "Automated database moving for $ENV_ENGINE is not yet implemented."
+        fi
+    fi
+
+    log "Worktree moved to '$NEW_BRANCH'."
+    
+    # Output the new path so the shell wrapper can cd into it
+    echo "$HUB_DIR/$NEW_BRANCH" >&3
+}
+
+case "$COMMAND" in
+    init)
+        cmd_init "$@"
+        ;;
+    switch)
+        cmd_switch "$@"
+        ;;
+    remove)
+        cmd_remove "$@"
+        ;;
+    -m)
+        cmd_m "$@"
+        ;;
+    sync-ddev)
+        cmd_sync_ddev "$@"
+        ;;
+    *)
+        error_exit "Unknown command: $COMMAND\nRun 'gar -h' to see available commands."
+        ;;
+esac
