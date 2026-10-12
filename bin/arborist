@@ -16,11 +16,11 @@ Usage:
 
 Commands:
   init <repo_url> <dir>    Initialize a new Hub and provision baseline worktree
+  switch [-c] [branch]     Switch to a worktree, checkout remote, or create (-c) a new one
   list                     List all worktrees, branches, and database mappings
   prune [options]          Prune orphaned worktrees, branches, and databases (-f, --dry-run)
-  switch [-c] <branch>     Switch to an existing worktree or create (-c) a new one
   -m [old_branch] <new>    Move/rename a worktree, branch, and database
-  remove <branch>          Remove a worktree, branch, and drop isolated database
+  remove [options] <branch> Remove a worktree, branch, and drop isolated database (-f, -y)
   db <action> [options]    Database operations (import/export) (aliases: dbi, dbe)
   sync-ddev                Synchronize Hub .ddev config from tracking branch
   install-hooks            Install Git hooks in the Hub for automatic pruning
@@ -41,6 +41,40 @@ Examples:
   gar dbi --file custom.sql.gz
   gar dbe --target feature-branch
 EOF
+    exit 0
+fi
+
+# Handle '__complete' command before stdout redirection so completion output goes to stdout
+if [ "$COMMAND" = "__complete" ]; then
+    shift
+    TARGET_TYPE=${1:-worktrees}
+    HUB_DIR=""
+    cur="$PWD"
+    while [ "$cur" != "/" ]; do
+        if [ -d "$cur/.git" ] && [ -d "$cur/.ddev" ] || [ -f "$cur/.arborist" ]; then
+            HUB_DIR="$cur"
+            break
+        fi
+        cur=$(dirname "$cur")
+    done
+    if [ -n "$HUB_DIR" ] && [ -d "$HUB_DIR" ]; then
+        case "$TARGET_TYPE" in
+            worktrees)
+                (
+                    cd "$HUB_DIR" 2>/dev/null || exit 0
+                    git worktree list --porcelain 2>/dev/null | awk '/^branch refs\/heads\// {sub(/^branch refs\/heads\//, ""); print}'
+                    git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null
+                    git for-each-ref --format='%(refname:short)' refs/remotes/origin 2>/dev/null | sed 's@^origin/@@' | grep -v '^HEAD$'
+                ) | sort -u
+                ;;
+            branches)
+                (
+                    cd "$HUB_DIR" 2>/dev/null || exit 0
+                    git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null
+                ) | sort -u
+                ;;
+        esac
+    fi
     exit 0
 fi
 
@@ -67,6 +101,92 @@ gar() {
 alias arborist="gar"
 alias dbi="gar dbi"
 alias dbe="gar dbe"
+
+# Shell completion for Zsh and Bash
+if [ -n "\$ZSH_VERSION" ]; then
+    _gar_zsh_complete() {
+        local -a commands
+        commands=(
+            'init:Initialize a new Hub and baseline worktree'
+            'switch:Switch to a worktree or create a new one'
+            'list:List all worktrees, branches, and database mappings'
+            'prune:Prune orphaned worktrees, branches, and databases'
+            'remove:Remove a worktree, branch, and database'
+            'db:Database operations (import/export)'
+            'dbi:Import database dump'
+            'dbe:Export database dump'
+            'sync-ddev:Synchronize Hub .ddev config'
+            'install-hooks:Install Git hooks in the Hub'
+            '-m:Move or rename a worktree and database'
+        )
+
+        if (( CURRENT == 2 )); then
+            _describe -t commands 'gar command' commands
+            return 0
+        fi
+
+        case "\$words[2]" in
+            switch|remove|-m)
+                local -a wts
+                wts=(\$( "$BIN_PATH" __complete worktrees 2>/dev/null ))
+                if (( \${#wts} > 0 )); then
+                    _describe -t wts 'worktree / branch' wts
+                fi
+                ;;
+            db)
+                if (( CURRENT == 3 )); then
+                    local -a dbcmds
+                    dbcmds=('import:Import SQL dump' 'export:Export database')
+                    _describe -t dbcmds 'db command' dbcmds
+                fi
+                ;;
+            prune)
+                local -a popts
+                popts=('-f:Force prune without prompt' '--force:Force prune without prompt' '--dry-run:Preview pruned resources')
+                _describe -t popts 'prune option' popts
+                ;;
+        esac
+    }
+    compdef _gar_zsh_complete gar arborist 2>/dev/null || true
+elif [ -n "\$BASH_VERSION" ]; then
+    _gar_bash_complete() {
+        local cur prev words cword
+        COMPREPLY=()
+        cur="\${COMP_WORDS[COMP_CWORD]}"
+        prev="\${COMP_WORDS[COMP_CWORD-1]}"
+
+        local commands="init switch list prune remove db dbi dbe sync-ddev install-hooks -m -h help"
+
+        if [ "\$COMP_CWORD" -eq 1 ]; then
+            COMPREPLY=( \$(compgen -W "\$commands" -- "\$cur") )
+            return 0
+        fi
+
+        case "\$prev" in
+            switch|remove|-m)
+                local wts
+                wts=\$("$BIN_PATH" __complete worktrees 2>/dev/null)
+                COMPREPLY=( \$(compgen -W "\$wts" -- "\$cur") )
+                return 0
+                ;;
+            db)
+                COMPREPLY=( \$(compgen -W "import export info" -- "\$cur") )
+                return 0
+                ;;
+            prune)
+                COMPREPLY=( \$(compgen -W "-f --force --dry-run" -- "\$cur") )
+                return 0
+                ;;
+            --target)
+                local branches
+                branches=\$("$BIN_PATH" __complete branches 2>/dev/null)
+                COMPREPLY=( \$(compgen -W "\$branches" -- "\$cur") )
+                return 0
+                ;;
+        esac
+    }
+    complete -F _gar_bash_complete gar arborist 2>/dev/null || true
+fi
 EOF
     exit 0
 fi
@@ -381,8 +501,8 @@ EOF
 }
 
 function cmd_switch() {
-    CREATE_FLAG=0
-    BRANCH=""
+    local CREATE_FLAG=0
+    local BRANCH=""
 
     if [ "$1" == "-c" ]; then
         CREATE_FLAG=1
@@ -391,71 +511,160 @@ function cmd_switch() {
         BRANCH=$1
     fi
 
-    if [ -z "$BRANCH" ]; then
-        error_exit "Usage: gar switch [-c] <branch>"
-    fi
-
     HUB_DIR=$(check_hub_dir)
     cd "$HUB_DIR"
     
-    source "$HUB_DIR/.arborist" 2>/dev/null || SPARSE_EXCLUDES="!/.ddev/ !/.lando.yml !/.lando/ !/docker-compose.yml"
+    source "$HUB_DIR/.arborist" 2>/dev/null || true
+    SPARSE_EXCLUDES=${SPARSE_EXCLUDES:-"!/.ddev/ !/.lando.yml !/.lando/ !/docker-compose.yml"}
     ENV_ENGINE=${ENV_ENGINE:-ddev}
+    DEFAULT_BRANCH=${DEFAULT_BRANCH:-develop}
 
+    # 1. No branch argument: interactive selection or fallback to DEFAULT_BRANCH
+    if [ -z "$BRANCH" ]; then
+        local -a wt_list=()
+        while IFS= read -r line; do
+            [ -n "$line" ] && wt_list+=("$line")
+        done < <(git worktree list --porcelain 2>/dev/null | awk '/^branch refs\/heads\// {sub(/^branch refs\/heads\//, ""); print}')
+
+        if [ ${#wt_list[@]} -le 1 ] || [ "$GAR_AUTO_YES" == "true" ] || [ ! -t 0 ]; then
+            BRANCH="$DEFAULT_BRANCH"
+        else
+            log "Select a worktree to switch to:"
+            local idx=1
+            for wt in "${wt_list[@]}"; do
+                if [ "$wt" == "$DEFAULT_BRANCH" ]; then
+                    log "  $idx) $wt (tracking)"
+                else
+                    log "  $idx) $wt"
+                fi
+                idx=$((idx + 1))
+            done
+            read -p "Select worktree [1-${#wt_list[@]}] (default: 1): " choice </dev/tty || choice=1
+            choice=${choice:-1}
+            if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#wt_list[@]} ]; then
+                BRANCH="${wt_list[$((choice - 1))]}"
+            else
+                error_exit "Invalid selection: $choice"
+            fi
+        fi
+    fi
+
+    # 2. Existing worktree directory: simply switch into it
     if [ -d "$BRANCH" ]; then
-        log "Worktree '$BRANCH' already exists."
+        log "Switched to worktree '$BRANCH'."
         echo "$HUB_DIR/$BRANCH" >&3
         exit 0
     fi
 
-    if [ $CREATE_FLAG -eq 1 ]; then
-        log "Creating new worktree for '$BRANCH'..."
-        git worktree add "$BRANCH" -b "$BRANCH"
-        
-        cd "$BRANCH"
-        git sparse-checkout set --no-cone '/*' $SPARSE_EXCLUDES
-        cd ..
-        
-        log "Worktree provisioned."
-        
-        if [ "$GAR_AUTO_YES" == "true" ]; then
-            create_db="y"
-            log "Auto-confirming database creation for tests."
-        else
-            read -p "Create an isolated database for this branch? [y/N]: " create_db </dev/tty || true
-        fi
-        create_db=${create_db:-N}
-        
-        if [[ "$create_db" =~ ^[Yy]$ ]]; then
-            DB_NAME=$(get_db_name "$BRANCH")
-            if [ "$ENV_ENGINE" == "ddev" ]; then
-                log "Cloning default database into $DB_NAME..."
-                ddev mysql -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`;" || true
-                ddev export-db --database=db | ddev import-db --database=$DB_NAME
-                log "Isolated database $DB_NAME ready."
-            else
-                log "Automated database cloning for $ENV_ENGINE is not yet implemented."
-            fi
-        else
-            log "Using default shared database."
-        fi
+    # 3. Worktree does not exist yet: determine whether local, remote, or brand new
+    local has_local_branch=false
+    local has_remote_branch=false
 
-        echo "$HUB_DIR/$BRANCH" >&3
-    else
-        # Try to checkout existing branch
-        git worktree add "$BRANCH" "$BRANCH"
-        cd "$BRANCH"
-        git sparse-checkout set --no-cone '/*' $SPARSE_EXCLUDES
-        cd ..
-        
-        log "Checked out existing branch into worktree '$BRANCH'."
-        echo "$HUB_DIR/$BRANCH" >&3
+    if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+        has_local_branch=true
     fi
+    if git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+        has_remote_branch=true
+    fi
+
+    if [ $CREATE_FLAG -eq 1 ]; then
+        log "Creating new worktree and branch for '$BRANCH'..."
+        git worktree add "$BRANCH" -b "$BRANCH"
+    elif [ "$has_local_branch" = true ]; then
+        log "Checking out existing branch into worktree '$BRANCH'..."
+        git worktree add "$BRANCH" "$BRANCH"
+    elif [ "$has_remote_branch" = true ]; then
+        log "Found remote branch 'origin/$BRANCH'. Checking out tracking worktree..."
+        git worktree add "$BRANCH" --track -b "$BRANCH" "origin/$BRANCH"
+    else
+        # Branch not found locally or remotely, and -c was not specified
+        if [ "$GAR_AUTO_YES" != "true" ] && [ -t 0 ]; then
+            read -p "Branch '$BRANCH' not found locally or on remote. Create it now? [Y/n]: " create_confirm </dev/tty || create_confirm=Y
+            create_confirm=${create_confirm:-Y}
+            if [[ "$create_confirm" =~ ^[Yy]$ ]]; then
+                log "Creating new worktree and branch for '$BRANCH'..."
+                git worktree add "$BRANCH" -b "$BRANCH"
+            else
+                log "Switch cancelled."
+                exit 0
+            fi
+        elif [ "$GAR_AUTO_YES" == "true" ]; then
+            log "Creating new worktree and branch for '$BRANCH'..."
+            git worktree add "$BRANCH" -b "$BRANCH"
+        else
+            error_exit "Branch '$BRANCH' not found. Use 'gar switch -c $BRANCH' to create it."
+        fi
+    fi
+
+    # Apply sparse-checkout and provision environment
+    cd "$BRANCH"
+    git sparse-checkout set --no-cone '/*' $SPARSE_EXCLUDES
+    cd ..
+    
+    log "Worktree provisioned."
+
+    # Database handling for new worktree
+    if [ "$GAR_AUTO_YES" == "true" ]; then
+        create_db="y"
+        log "Auto-confirming database creation for tests."
+    else
+        read -p "Create an isolated database for this branch? [y/N]: " create_db </dev/tty || true
+    fi
+    create_db=${create_db:-N}
+
+    if [[ "$create_db" =~ ^[Yy]$ ]]; then
+        DB_NAME=$(get_db_name "$BRANCH")
+        if [ "$ENV_ENGINE" == "ddev" ]; then
+            log "Cloning default database into $DB_NAME..."
+            ddev mysql -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`;" || true
+            ddev export-db --database=db | ddev import-db --database=$DB_NAME
+            log "Isolated database $DB_NAME ready."
+        else
+            log "Automated database cloning for $ENV_ENGINE is not yet implemented."
+        fi
+    else
+        log "Using default shared database."
+    fi
+
+    echo "$HUB_DIR/$BRANCH" >&3
 }
 
 function cmd_remove() {
-    BRANCH=$1
+    local FORCE=false
+    local BRANCH=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -f|--force|-y)
+                FORCE=true
+                shift
+                ;;
+            -h|--help)
+                cat << 'EOF'
+Usage: gar remove [options] <branch>
+
+Remove a worktree, branch, and drop isolated database.
+
+Options:
+  -f, --force, -y    Skip confirmation prompt and drop isolated database
+  -h, --help         Show this help message
+EOF
+                exit 0
+                ;;
+            -*)
+                error_exit "Unknown option: $1\nUsage: gar remove [-f|--force] <branch>"
+                ;;
+            *)
+                if [ -z "$BRANCH" ]; then
+                    BRANCH="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
     if [ -z "$BRANCH" ]; then
-        error_exit "Usage: gar remove <branch>"
+        error_exit "Usage: gar remove [-f|--force] <branch>"
     fi
 
     HUB_DIR=$(check_hub_dir)
@@ -470,9 +679,11 @@ function cmd_remove() {
 
     DB_NAME=$(get_db_name "$BRANCH")
 
-    if [ "$GAR_AUTO_YES" == "true" ]; then
+    if [ "$FORCE" = true ] || [ "$GAR_AUTO_YES" == "true" ]; then
         drop_db="y"
-        log "Auto-confirming database drop for tests."
+        if [ "$FORCE" = false ] && [ "$GAR_AUTO_YES" == "true" ]; then
+            log "Auto-confirming database drop for tests."
+        fi
     else
         read -p "Drop the isolated database ($DB_NAME) if it exists? [Y/n]: " drop_db </dev/tty || true
     fi

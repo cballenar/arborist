@@ -64,6 +64,15 @@ If you would rather install this manually:
 You can run `/path/to/arborist/bin/arborist hook` in your terminal anytime to inspect the exact ~15 lines of shell function code being loaded.
 
 
+### Tab Autocompletion
+
+Arborist includes built-in tab autocompletion for both **Zsh** and **Bash**. When shell integration is enabled via `./install.sh` or `eval "$(gar hook)"`, hitting `<Tab>` automatically completes:
+* Subcommands (`switch`, `list`, `prune`, `remove`, `db`, `dbi`, `dbe`, `-m`, etc.)
+* Active worktrees and Git branches for `switch`, `remove`, and `-m`
+* Database subcommands (`import`, `export`, `info`) and `--target` branch completion
+* Flags for commands such as `prune` (`-f`, `--force`, `--dry-run`) and `remove` (`-f`, `--force`)
+
+
 ## Usage
 
 The primary command is `gar`, with `arborist` available as the full command. Run `gar -h` to see the help output.
@@ -93,7 +102,12 @@ Switch to an existing worktree (and automatically `cd` into it):
 gar switch feature-branch
 ```
 
-Provision and switch to a brand-new feature branch:
+Arborist includes built-in switch ergonomics:
+* **No-argument switch:** Running `gar switch` with no arguments automatically returns to your baseline tracking branch (`develop` / `main`), or displays an interactive worktree selector.
+* **Remote branch auto-checkout:** Running `gar switch <branch>` for a branch that exists on the remote (`origin/<branch>`) automatically provisions a local tracking worktree without requiring `-c`.
+* **Smart branch creation prompt:** If you enter a new branch name without `-c`, Arborist asks if you'd like to create it now instead of failing.
+
+Provision and switch to an explicit brand-new feature branch:
 ```bash
 gar switch -c new-feature
 ```
@@ -118,8 +132,12 @@ gar -m old-branch-name new-branch-name
 Safely drop a worktree, remove its Git tracking branch, and clean up its database:
 ```bash
 gar remove feature-branch
+
+# Skip confirmation prompts and force drop isolated database
+gar remove -f feature-branch
+gar remove --force feature-branch
 ```
-*Prompts to safely drop `db_feature-branch` if an isolated database exists.*
+*Prompts to safely drop `db_feature-branch` if an isolated database exists (or bypasses prompt with `-f` / `--force`).*
 
 
 ### List Worktrees & Databases (`gar list`)

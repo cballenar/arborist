@@ -379,5 +379,50 @@ fi
 "$HUB_DIR/.git/hooks/post-merge"
 echo "✅ List and Prune commands passed!"
 
+# 10. Test: Switch Ergonomics, Remove -f, and Autocompletion
+echo ""
+echo "=> Testing: Switch Ergonomics, Remove -f, and Autocompletion"
+cd "$HUB_DIR"
+
+# 10.1 Test: 'gar switch' with no arguments returns tracking branch path
+NO_ARG_TARGET=$("$GAR_BIN" switch)
+if [ "$NO_ARG_TARGET" != "$HUB_DIR/develop" ]; then
+    echo "❌ gar switch (no args) failed: expected $HUB_DIR/develop, got $NO_ARG_TARGET"
+    exit 1
+fi
+
+# 10.2 Test: 'gar switch' remote branch without -c
+git -C "$REMOTE_REPO" branch feature-from-remote develop
+git -C "$HUB_DIR/develop" fetch origin >/dev/null 2>&1
+
+REMOTE_TARGET=$("$GAR_BIN" switch feature-from-remote)
+if [ "$REMOTE_TARGET" != "$HUB_DIR/feature-from-remote" ] || [ ! -d "$HUB_DIR/feature-from-remote" ]; then
+    echo "❌ gar switch remote branch failed: worktree not created"
+    exit 1
+fi
+
+# 10.3 Test: 'gar remove -f' (removes worktree and drops DB without prompt)
+"$GAR_BIN" remove -f feature-from-remote
+if [ -d "$HUB_DIR/feature-from-remote" ]; then
+    echo "❌ gar remove -f failed: worktree still exists"
+    exit 1
+fi
+
+# 10.4 Test: Autocompletion __complete helper outputs branches
+COMPLETE_OUTPUT=$("$GAR_BIN" __complete worktrees)
+if ! echo "$COMPLETE_OUTPUT" | grep -q "develop"; then
+    echo "❌ __complete worktrees failed: develop not in completion output"
+    exit 1
+fi
+
+# 10.5 Test: 'gar hook' output contains completion definition
+HOOK_OUTPUT=$("$GAR_BIN" hook)
+if ! echo "$HOOK_OUTPUT" | grep -q "_gar_zsh_complete" || ! echo "$HOOK_OUTPUT" | grep -q "_gar_bash_complete"; then
+    echo "❌ gar hook failed: shell completions missing"
+    exit 1
+fi
+
+echo "✅ Switch Ergonomics, Remove -f, and Autocompletion passed!"
+
 echo ""
 echo "🎉 All tests passed successfully!"
