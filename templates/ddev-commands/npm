@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+## Description: Run npm inside the web container (dynamically locates theme/package.json in active worktree)
+## Usage: npm [flags] [args]
+## Example: "ddev npm install" or "ddev npm run build"
+## ExecRaw: true
+## HostWorkingDir: true
+
+# 1. If current directory already has package.json, run directly
+if [ -f "./package.json" ]; then
+  exec npm "$@"
+fi
+
+# 2. Check if an ancestor directory has package.json (e.g. invoked from inside a theme subfolder)
+CUR_DIR="$PWD"
+while [ "$CUR_DIR" != "/var/www" ] && [ "$CUR_DIR" != "/" ]; do
+  if [ -f "$CUR_DIR/package.json" ]; then
+    cd "$CUR_DIR" && exec npm "$@"
+  fi
+  if [ "$CUR_DIR" = "/var/www/html" ]; then
+    break
+  fi
+  CUR_DIR=$(dirname "$CUR_DIR")
+done
+
+# 3. Locate the theme folder within the active worktree
+TARGET_NODE_PATH=""
+CHECK_DIR="$PWD"
+while [ "$CHECK_DIR" != "/var/www" ] && [ "$CHECK_DIR" != "/" ]; do
+  for pkg in "$CHECK_DIR"/docroot/themes/custom/*/package.json "$CHECK_DIR"/themes/custom/*/package.json "$CHECK_DIR"/web/themes/custom/*/package.json; do
+    if [ -f "$pkg" ]; then
+      TARGET_NODE_PATH="$(dirname "$pkg")"
+      break 2
+    fi
+  done
+
+  if [ "$CHECK_DIR" = "/var/www/html" ]; then
+    break
+  fi
+  CHECK_DIR=$(dirname "$CHECK_DIR")
+done
+
+# 4. Fallback if invoked from hub root or no theme found in current path
+if [ -z "$TARGET_NODE_PATH" ]; then
+  if [ -n "$DDEV_DOCROOT" ] && [ -d "/var/www/html/$DDEV_DOCROOT" ]; then
+    for pkg in "/var/www/html/$DDEV_DOCROOT"/themes/custom/*/package.json; do
+      if [ -f "$pkg" ]; then
+        TARGET_NODE_PATH="$(dirname "$pkg")"
+        break
+      fi
+    done
+  fi
+  if [ -z "$TARGET_NODE_PATH" ] && [ -f "/var/www/html/.arborist" ]; then
+    DEFAULT_BRANCH=$(grep '^DEFAULT_BRANCH=' /var/www/html/.arborist | cut -d'=' -f2 | tr -d '"' || echo "develop")
+    WEBROOT=$(grep '^WEBROOT=' /var/www/html/.arborist | cut -d'=' -f2 | tr -d '"' || echo "docroot")
+    for pkg in "/var/www/html/$DEFAULT_BRANCH/$WEBROOT"/themes/custom/*/package.json; do
+      if [ -f "$pkg" ]; then
+        TARGET_NODE_PATH="$(dirname "$pkg")"
+        break
+      fi
+    done
+  fi
+fi
+
+if [ -n "$TARGET_NODE_PATH" ]; then
+  echo "No package.json in current directory, changing into theme folder ($TARGET_NODE_PATH)..."
+  cd "$TARGET_NODE_PATH" && exec npm "$@"
+else
+  echo "Error: No package.json found in current directory ($PWD) or theme folder." >&2
+  exit 1
+fi

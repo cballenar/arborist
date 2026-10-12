@@ -1212,6 +1212,14 @@ function cmd_sync_ddev() {
     fi
     
     git archive "$DEFAULT_BRANCH" .ddev/ | tar -x || true
+    if [ -d "$TEMPLATES_DIR/ddev-commands" ]; then
+        mkdir -p .ddev/commands/web
+        for cmd_file in "$TEMPLATES_DIR/ddev-commands"/*; do
+            [ -f "$cmd_file" ] || continue
+            cp "$cmd_file" ".ddev/commands/web/$(basename "$cmd_file")"
+            chmod +x ".ddev/commands/web/$(basename "$cmd_file")"
+        done
+    fi
     
     log ".ddev synced successfully. Restarting DDEV..."
     ddev restart

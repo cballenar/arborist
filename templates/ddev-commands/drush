@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+## Description: Run drush inside active worktree
+## Usage: drush [flags] [args]
+## Example: "ddev drush status"
+## ExecRaw: true
+## HostWorkingDir: true
+
+# Look for vendor/bin/drush starting from current working directory up to /var/www/html
+DRUSH_PATH=""
+CUR_DIR="$PWD"
+while [ "$CUR_DIR" != "/var/www" ] && [ "$CUR_DIR" != "/" ]; do
+    if [ -x "$CUR_DIR/vendor/bin/drush" ]; then
+        DRUSH_PATH="$CUR_DIR/vendor/bin/drush"
+        break
+    fi
+    CUR_DIR=$(dirname "$CUR_DIR")
+done
+
+# If not found and at hub root (/var/www/html), try default branch
+if [ -z "$DRUSH_PATH" ] && [ -f "/var/www/html/.arborist" ]; then
+    DEFAULT_BRANCH=$(grep '^DEFAULT_BRANCH=' /var/www/html/.arborist | cut -d'=' -f2 | tr -d '"' || echo "develop")
+    if [ -x "/var/www/html/$DEFAULT_BRANCH/vendor/bin/drush" ]; then
+        DRUSH_PATH="/var/www/html/$DEFAULT_BRANCH/vendor/bin/drush"
+    fi
+fi
+
+if [ -n "$DRUSH_PATH" ]; then
+    exec "$DRUSH_PATH" "$@"
+elif command -v drush >/dev/null 2>&1; then
+    exec drush "$@"
+else
+    echo "drush is not available in $PWD. Ensure drush is installed in your worktree." >&2
+    exit 1
+fi
