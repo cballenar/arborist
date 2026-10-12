@@ -225,6 +225,24 @@ EOF
         mkdir -p .ddev/nginx_full
         # Dynamically inject the webroot into the nginx template
         sed "s|/var/www/html/\$active_branch/docroot|/var/www/html/\$active_branch/$WEBROOT|g" "$TEMPLATES_DIR/workspace-nginx.conf" > .ddev/nginx_full/workspace-nginx.conf
+
+        PROJECT_NAME=""
+        if [ -f ".ddev/config.yaml" ]; then
+            PROJECT_NAME=$(grep -E "^name:" .ddev/config.yaml | head -n1 | sed -E 's/^name:[[:space:]]*//; s/["'\'' ]//g')
+        fi
+        if [ -z "$PROJECT_NAME" ]; then
+            PROJECT_NAME=$(basename "$PWD")
+        fi
+
+        log "Configuring DDEV wildcard routing..."
+        ddev config --additional-hostnames="*.$PROJECT_NAME" || true
+        if [ -f ".ddev/config.yaml" ] && ! grep -q "\*\.$PROJECT_NAME" .ddev/config.yaml; then
+            if grep -q "^additional_hostnames:" .ddev/config.yaml; then
+                sed "s|^additional_hostnames:.*|additional_hostnames: [\"*.$PROJECT_NAME\"]|" .ddev/config.yaml > .ddev/config.yaml.tmp && mv .ddev/config.yaml.tmp .ddev/config.yaml
+            else
+                echo "additional_hostnames: [\"*.$PROJECT_NAME\"]" >> .ddev/config.yaml
+            fi
+        fi
     fi
 
     if [ "$GAR_AUTO_YES" != "true" ]; then

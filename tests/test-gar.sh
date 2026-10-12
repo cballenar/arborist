@@ -64,6 +64,11 @@ if [ ! -f "develop/docroot/sites/default/settings.local.php" ]; then
     exit 1
 fi
 
+if ! grep -q "\*\.hub" ".ddev/config.yaml" 2>/dev/null; then
+    echo "❌ Wildcard routing failed: additional_hostnames not found in .ddev/config.yaml"
+    exit 1
+fi
+
 echo "✅ Init passed!"
 
 # 4. Test: Switch (Create New Branch)
