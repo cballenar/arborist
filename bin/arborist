@@ -250,6 +250,56 @@ function is_in_space_list() {
     return 1
 }
 
+function provision_drupal_worktree() {
+    local wt_dir="$1"
+    local site_dir="$wt_dir/$WEBROOT/sites/default"
+    local def_site_dir="$HUB_DIR/$DEFAULT_BRANCH/$WEBROOT/sites/default"
+    
+    [ -d "$site_dir" ] || mkdir -p "$site_dir"
+
+    # Ensure injected files are excluded in git
+    mkdir -p "$HUB_DIR/.git/info"
+    touch "$HUB_DIR/.git/info/exclude"
+    for pattern in "settings.workspace.php" "settings.local.php" "settings.ddev.php"; do
+        if ! grep -q "^$pattern$" "$HUB_DIR/.git/info/exclude" 2>/dev/null; then
+            echo "$pattern" >> "$HUB_DIR/.git/info/exclude"
+        fi
+    done
+
+    # 1. settings.workspace.php
+    if [ ! -f "$site_dir/settings.workspace.php" ]; then
+        if [ -f "$def_site_dir/settings.workspace.php" ]; then
+            cp "$def_site_dir/settings.workspace.php" "$site_dir/settings.workspace.php"
+        elif [ -f "$TEMPLATES_DIR/settings.workspace.php" ]; then
+            sed "s/'develop'/'$DEFAULT_BRANCH'/g" "$TEMPLATES_DIR/settings.workspace.php" > "$site_dir/settings.workspace.php"
+        fi
+    fi
+
+    # 2. settings.ddev.php
+    if [ "$ENV_ENGINE" == "ddev" ] && [ ! -f "$site_dir/settings.ddev.php" ]; then
+        if [ -f "$def_site_dir/settings.ddev.php" ]; then
+            cp "$def_site_dir/settings.ddev.php" "$site_dir/settings.ddev.php"
+        fi
+    fi
+
+    # 3. settings.local.php
+    if [ ! -f "$site_dir/settings.local.php" ]; then
+        if [ -f "$def_site_dir/settings.local.php" ]; then
+            cp "$def_site_dir/settings.local.php" "$site_dir/settings.local.php"
+        else
+            echo "<?php" > "$site_dir/settings.local.php"
+            echo "if (file_exists(__DIR__ . '/settings.workspace.php')) {" >> "$site_dir/settings.local.php"
+            echo "    require __DIR__ . '/settings.workspace.php';" >> "$site_dir/settings.local.php"
+            echo "}" >> "$site_dir/settings.local.php"
+        fi
+    elif ! grep -q "settings.workspace.php" "$site_dir/settings.local.php"; then
+        echo "" >> "$site_dir/settings.local.php"
+        echo "if (file_exists(__DIR__ . '/settings.workspace.php')) {" >> "$site_dir/settings.local.php"
+        echo "    require __DIR__ . '/settings.workspace.php';" >> "$site_dir/settings.local.php"
+        echo "}" >> "$site_dir/settings.local.php"
+    fi
+}
+
 function install_git_hooks() {
     local hub_dir="$1"
     local hooks_dir="$hub_dir/.git/hooks"
@@ -498,6 +548,16 @@ EOF
                 echo "docroot: $DEFAULT_BRANCH/$WEBROOT" >> .ddev/config.yaml
             fi
         fi
+
+        if [ -d "$TEMPLATES_DIR/ddev-commands" ]; then
+            log "Injecting DDEV command wrappers..."
+            mkdir -p .ddev/commands/web
+            for cmd_file in "$TEMPLATES_DIR/ddev-commands"/*; do
+                [ -f "$cmd_file" ] || continue
+                cp "$cmd_file" ".ddev/commands/web/$(basename "$cmd_file")"
+                chmod +x ".ddev/commands/web/$(basename "$cmd_file")"
+            done
+        fi
     fi
 
     if [ "$GAR_AUTO_YES" != "true" ]; then
@@ -511,6 +571,9 @@ EOF
                 cd "$b"
                 git sparse-checkout set --no-cone '/*' $SPARSE_EXCLUDES
                 cd ..
+                if [ "$FRAMEWORK" == "drupal" ]; then
+                    provision_drupal_worktree "$PWD/$b"
+                fi
             done
         fi
     fi
@@ -570,6 +633,9 @@ function cmd_switch() {
 
     # 2. Existing worktree directory: simply switch into it
     if [ -d "$BRANCH" ]; then
+        if [ "$FRAMEWORK" == "drupal" ]; then
+            provision_drupal_worktree "$HUB_DIR/$BRANCH"
+        fi
         log "Switched to worktree '$BRANCH'."
         echo "$HUB_DIR/$BRANCH" >&3
         exit 0
@@ -620,6 +686,10 @@ function cmd_switch() {
     git sparse-checkout set --no-cone '/*' $SPARSE_EXCLUDES
     cd ..
     
+    if [ "$FRAMEWORK" == "drupal" ]; then
+        provision_drupal_worktree "$HUB_DIR/$BRANCH"
+    fi
+
     log "Worktree provisioned."
 
     # Database handling for new worktree
@@ -737,6 +807,31 @@ EOF
 }
 
 function cmd_list() {
+    local SHOW_ALL=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -a|--all)
+                SHOW_ALL=true
+                shift
+                ;;
+            -h|--help)
+                cat << 'EOF'
+Usage: gar list [options]
+
+List active worktrees, databases, and environment statuses.
+
+Options:
+  -a, --all    Also list Git branches without worktrees
+  -h, --help   Show this help message
+EOF
+                exit 0
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
     HUB_DIR=$(check_hub_dir)
     cd "$HUB_DIR"
 
@@ -763,8 +858,6 @@ function cmd_list() {
         log "\033[33mNote:\033[0m DDEV is not running. Database status cannot be queried."
     fi
     log ""
-    printf "%-12s %-20s %-24s %-22s %s\n" "STATUS" "BRANCH" "WORKTREE" "DATABASE" "DETAILS"
-    printf "%-12s %-20s %-24s %-22s %s\n" "------" "------" "--------" "--------" "-------"
 
     local PROCESSED_BRANCHES=" "
     local PROCESSED_DBS=" "
@@ -800,11 +893,22 @@ function cmd_list() {
         wt_branches+=("$cur_branch")
     fi
 
+    local -a row_icons=()
+    local -a row_status_texts=()
+    local -a row_lines1=()
+    local -a row_lines2=()
+    local -a row_lines3=()
+    local -a row_db_statuses=()
+
+    local max_s=6
+    local max_w=9
+    local max_d=9
+
     local i=0
     while [ $i -lt ${#wt_paths[@]} ]; do
         local wt="${wt_paths[$i]}"
         local branch="${wt_branches[$i]}"
-        local wt_rel="./$(basename "$wt")"
+        local wt_rel="./${wt#$HUB_DIR/}"
         PROCESSED_BRANCHES="$PROCESSED_BRANCHES$branch "
 
         local db_name
@@ -815,91 +919,187 @@ function cmd_list() {
         fi
         PROCESSED_DBS="$PROCESSED_DBS$db_name "
 
-        local db_display="$db_name"
-        if [ "$ddev_running" = true ]; then
-            if ! is_in_space_list "$db_name" "$existing_dbs"; then
-                db_display="$db_name (missing)"
-            fi
-        fi
-
         local track=""
         if [ "$branch" != "detached" ]; then
             track=$(git for-each-ref --format '%(upstream:track)' "refs/heads/$branch" 2>/dev/null || true)
         fi
 
-        local status="⚪ Valid"
-        local details="In sync"
+        local icon="⚪"
+        local status_text="Valid"
 
         local is_active=false
         if [ "$INVOCATION_DIR" = "$wt" ] || [[ "$INVOCATION_DIR" == "$wt/"* ]]; then
             is_active=true
         fi
 
-        if [ "$is_active" = true ]; then
-            status="🟢 Active"
-            details="Current directory"
-        elif is_in_comma_list "$branch" "$PROTECTED_BRANCHES"; then
-            status="🟡 Protect"
-            if [ "$branch" = "$DEFAULT_BRANCH" ]; then
-                details="Tracking branch"
+        if [ "$track" = "[gone]" ]; then
+            if [ "$is_active" = true ]; then
+                icon="🟢"
+                status_text="Active ([gone])"
             else
-                details="Protected branch"
+                icon="🔴"
+                status_text="Orphaned ([gone])"
             fi
-        elif [ "$track" = "[gone]" ]; then
-            status="🔴 Orphaned"
-            details="Remote PR merged ([gone])"
+        elif [ "$is_active" = true ]; then
+            icon="🟢"
+            status_text="Active"
+        elif is_in_comma_list "$branch" "$PROTECTED_BRANCHES"; then
+            icon="🟡"
+            status_text="Protect"
+        else
+            icon="⚪"
+            status_text="Valid"
         fi
 
-        printf "%-12s %-20s %-24s %-22s %s\n" "$status" "$branch" "$wt_rel" "$db_display" "$details"
+        local db_status="Ready"
+        if [ "$ddev_running" = false ]; then
+            db_status="Unknown"
+        else
+            if [ "$branch" == "$DEFAULT_BRANCH" ]; then
+                if is_in_space_list "db" "$existing_dbs"; then
+                    db_status="Default"
+                else
+                    db_status="Missing"
+                fi
+            else
+                if is_in_space_list "$db_name" "$existing_dbs"; then
+                    db_status="Ready"
+                else
+                    db_status="Missing"
+                fi
+            fi
+        fi
+
+        local l1="Branch:   $branch"
+        local l2="Worktree: $wt_rel"
+        local l3="Database: $db_name"
+
+        row_icons+=("$icon")
+        row_status_texts+=("$status_text")
+        row_lines1+=("$l1")
+        row_lines2+=("$l2")
+        row_lines3+=("$l3")
+        row_db_statuses+=("$db_status")
+
+        [ ${#status_text} -gt $max_s ] && max_s=${#status_text}
+        [ ${#l1} -gt $max_w ] && max_w=${#l1}
+        [ ${#l2} -gt $max_w ] && max_w=${#l2}
+        [ ${#l3} -gt $max_w ] && max_w=${#l3}
+        [ ${#db_status} -gt $max_d ] && max_d=${#db_status}
+
         i=$((i + 1))
     done
 
-    # 2. Branches without worktrees
-    while IFS='|' read -r bname btrack; do
-        if [ -n "$bname" ] && ! is_in_space_list "$bname" "$PROCESSED_BRANCHES"; then
-            PROCESSED_BRANCHES="$PROCESSED_BRANCHES$bname "
-            local db_name
-            if [ "$bname" == "$DEFAULT_BRANCH" ]; then
-                db_name="db"
-            else
-                db_name=$(get_db_name "$bname")
-            fi
-            PROCESSED_DBS="$PROCESSED_DBS$db_name "
-
-            local db_display="$db_name"
-            if [ "$ddev_running" = true ]; then
-                if ! is_in_space_list "$db_name" "$existing_dbs"; then
-                    db_display="<none>"
-                fi
-            fi
-
-            local status="⚪ Valid"
-            local details="Branch only (no worktree)"
-
-            if is_in_comma_list "$bname" "$PROTECTED_BRANCHES"; then
-                status="🟡 Protect"
-                details="Protected (no worktree)"
-            elif [ "$btrack" = "[gone]" ]; then
-                status="🔴 Orphaned"
-                details="Remote [gone] (no worktree)"
-            fi
-
-            printf "%-12s %-20s %-24s %-22s %s\n" "$status" "$bname" "<none>" "$db_display" "$details"
-        fi
-    done < <(git for-each-ref --format '%(refname:short)|%(upstream:track)' refs/heads)
-
-    # 3. Databases in MySQL without branch or worktree
+    # 2. Databases in MySQL without worktree
     if [ "$ddev_running" = true ]; then
         for db in $existing_dbs; do
             if ! is_in_space_list "$db" "$PROCESSED_DBS"; then
+                local icon="🔴"
+                local status_text="Orphaned"
+                local l1="Database: $db"
+                local db_status="Orphaned"
+
                 if [ "$db" == "db" ]; then
-                    printf "%-12s %-20s %-24s %-22s %s\n" "🟡 Protect" "<none>" "<none>" "db" "Default database"
-                else
-                    printf "%-12s %-20s %-24s %-22s %s\n" "🔴 Orphaned" "<none>" "<none>" "$db" "DB exists (no branch/worktree)"
+                    icon="🟡"
+                    status_text="Protect"
+                    db_status="Default"
                 fi
+
+                row_icons+=("$icon")
+                row_status_texts+=("$status_text")
+                row_lines1+=("$l1")
+                row_lines2+=("")
+                row_lines3+=("")
+                row_db_statuses+=("$db_status")
+
+                [ ${#status_text} -gt $max_s ] && max_s=${#status_text}
+                [ ${#l1} -gt $max_w ] && max_w=${#l1}
+                [ ${#db_status} -gt $max_d ] && max_d=${#db_status}
             fi
         done
     fi
+
+    # 3. Optional: List branches without worktrees only when --all is passed
+    if [ "$SHOW_ALL" = true ]; then
+        while IFS='|' read -r bname btrack; do
+            if [ -n "$bname" ] && ! is_in_space_list "$bname" "$PROCESSED_BRANCHES"; then
+                local db_name
+                if [ "$bname" == "$DEFAULT_BRANCH" ]; then
+                    db_name="db"
+                else
+                    db_name=$(get_db_name "$bname")
+                fi
+
+                local icon="⚪"
+                local status_text="Valid"
+                if is_in_comma_list "$bname" "$PROTECTED_BRANCHES"; then
+                    icon="🟡"
+                    status_text="Protect"
+                elif [ "$btrack" = "[gone]" ]; then
+                    icon="🔴"
+                    status_text="Orphaned ([gone])"
+                fi
+
+                local db_status="No worktree"
+                if [ "$ddev_running" = true ]; then
+                    if is_in_space_list "$db_name" "$existing_dbs"; then
+                        db_status="Ready"
+                    else
+                        db_status="Missing"
+                    fi
+                elif [ "$ddev_running" = false ]; then
+                    db_status="Unknown"
+                fi
+
+                local l1="Branch:   $bname"
+                local l2="Worktree: <none>"
+                local l3="Database: $db_name"
+
+                row_icons+=("$icon")
+                row_status_texts+=("$status_text")
+                row_lines1+=("$l1")
+                row_lines2+=("$l2")
+                row_lines3+=("$l3")
+                row_db_statuses+=("$db_status")
+
+                [ ${#status_text} -gt $max_s ] && max_s=${#status_text}
+                [ ${#l1} -gt $max_w ] && max_w=${#l1}
+                [ ${#l2} -gt $max_w ] && max_w=${#l2}
+                [ ${#l3} -gt $max_w ] && max_w=${#l3}
+                [ ${#db_status} -gt $max_d ] && max_d=${#db_status}
+            fi
+        done < <(git for-each-ref --format '%(refname:short)|%(upstream:track)' refs/heads)
+    fi
+
+    # Print dynamically formatted table
+    local status_col_width=$((max_s + 3))
+    local sep_s=$(printf "%0.s-" $(seq 1 $status_col_width))
+    local sep_d=$(printf "%0.s-" $(seq 1 $max_d))
+    local sep_w=$(printf "%0.s-" $(seq 1 $max_w))
+
+    printf "%-${status_col_width}s  %-${max_d}s  %s\n" "STATUS" "DB STATUS" "WORKSPACE"
+    printf "%-${status_col_width}s  %-${max_d}s  %s\n" "$sep_s" "$sep_d" "$sep_w"
+
+    local j=0
+    while [ $j -lt ${#row_lines1[@]} ]; do
+        local icon="${row_icons[$j]}"
+        local stext="${row_status_texts[$j]}"
+        local l1="${row_lines1[$j]}"
+        local l2="${row_lines2[$j]}"
+        local l3="${row_lines3[$j]}"
+        local dstat="${row_db_statuses[$j]}"
+
+        printf "%s %-${max_s}s  %-${max_d}s  %s\n" "$icon" "$stext" "$dstat" "$l1"
+        if [ -n "$l2" ]; then
+            printf "%${status_col_width}s  %${max_d}s  %s\n" "" "" "$l2"
+        fi
+        if [ -n "$l3" ]; then
+            printf "%${status_col_width}s  %${max_d}s  %s\n" "" "" "$l3"
+        fi
+
+        echo ""
+        j=$((j + 1))
+    done
 }
 
 function cmd_prune() {
@@ -1046,7 +1246,7 @@ EOF
                     active_wts+=("$b:$found_wt")
                     skip_branch=true
                 # Check if dirty
-                elif [ -n "$(git -C "$found_wt" status --porcelain 2>/dev/null)" ]; then
+                elif [ -n "$(git -C "$found_wt" status --porcelain 2>/dev/null | grep -v -E '(settings\.workspace\.php|settings\.local\.php|settings\.ddev\.php)')" ]; then
                     dirty_wts+=("$b:$found_wt")
                     skip_branch=true
                 else

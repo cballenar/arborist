@@ -455,5 +455,65 @@ fi
 
 echo "✅ Post-Provision Command Error Termination passed!"
 
+# 12. Test: Branch Names with Slashes and Drush Command Wrapper
+echo ""
+echo "=> Testing: Branch Names with Slashes and Drush Command Wrapper"
+cd "$HUB_DIR"
+
+# Verify DDEV drush command wrapper was installed during init
+if [ ! -x "$HUB_DIR/.ddev/commands/web/drush" ]; then
+    echo "❌ Drush command wrapper missing or not executable at .ddev/commands/web/drush"
+    exit 1
+fi
+
+# Reset failing post provision cmd
+echo "POST_PROVISION_CMD=\"\"" >> "$HUB_DIR/.arborist"
+
+SLASH_BRANCH="bsph/dwc-27-test-feature"
+SLASH_TARGET=$("$GAR_BIN" switch -c "$SLASH_BRANCH")
+if [ "$SLASH_TARGET" != "$HUB_DIR/$SLASH_BRANCH" ] || [ ! -d "$HUB_DIR/$SLASH_BRANCH" ]; then
+    echo "❌ Slashed branch switch failed: expected $HUB_DIR/$SLASH_BRANCH"
+    exit 1
+fi
+
+# Verify Drupal files were provisioned in worktree
+if [ ! -f "$HUB_DIR/$SLASH_BRANCH/docroot/sites/default/settings.workspace.php" ]; then
+    echo "❌ settings.workspace.php not provisioned in $SLASH_BRANCH"
+    exit 1
+fi
+
+# Test gar db info from inside the worktree root
+cd "$HUB_DIR/$SLASH_BRANCH"
+INFO_OUT=$("$GAR_BIN" db info 2>&1)
+if ! echo "$INFO_OUT" | grep -q "Current Worktree:   $SLASH_BRANCH"; then
+    echo "❌ gar db info failed to detect current worktree for slashed branch. Got:"
+    echo "$INFO_OUT"
+    exit 1
+fi
+if ! echo "$INFO_OUT" | grep -q "Target Database:    db_bsph_dwc_27_test_feature"; then
+    echo "❌ gar db info resolved incorrect database for slashed branch. Got:"
+    echo "$INFO_OUT"
+    exit 1
+fi
+
+# Test gar db info from inside worktree subfolder (docroot/sites/default)
+cd "$HUB_DIR/$SLASH_BRANCH/docroot/sites/default"
+INFO_SUB=$("$GAR_BIN" db info 2>&1)
+if ! echo "$INFO_SUB" | grep -q "Target Database:    db_bsph_dwc_27_test_feature"; then
+    echo "❌ gar db info from subfolder resolved incorrect database. Got:"
+    echo "$INFO_SUB"
+    exit 1
+fi
+
+cd "$HUB_DIR"
+"$GAR_BIN" remove -f "$SLASH_BRANCH"
+if [ -d "$HUB_DIR/$SLASH_BRANCH" ]; then
+    echo "❌ Slashed branch worktree was not removed"
+    exit 1
+fi
+
+echo "✅ Slashed Branch Resolution and Drush Wrapper passed!"
+
 echo ""
 echo "🎉 All tests passed successfully!"
+
