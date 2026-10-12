@@ -260,7 +260,7 @@ function provision_drupal_worktree() {
     # Ensure injected files are excluded in git
     mkdir -p "$HUB_DIR/.git/info"
     touch "$HUB_DIR/.git/info/exclude"
-    for pattern in "settings.workspace.php" "settings.local.php" "settings.ddev.php"; do
+    for pattern in "settings.workspace.php" "settings.local.php" "settings.ddev.php" "development.services.yml"; do
         if ! grep -q "^$pattern$" "$HUB_DIR/.git/info/exclude" 2>/dev/null; then
             echo "$pattern" >> "$HUB_DIR/.git/info/exclude"
         fi
@@ -297,6 +297,17 @@ function provision_drupal_worktree() {
         echo "if (file_exists(__DIR__ . '/settings.workspace.php')) {" >> "$site_dir/settings.local.php"
         echo "    require __DIR__ . '/settings.workspace.php';" >> "$site_dir/settings.local.php"
         echo "}" >> "$site_dir/settings.local.php"
+    fi
+
+    # 4. development.services.yml (needed for cache.backend.null and local development overrides)
+    local sites_dir="$wt_dir/$WEBROOT/sites"
+    local def_sites_dir="$HUB_DIR/$DEFAULT_BRANCH/$WEBROOT/sites"
+    if [ ! -f "$sites_dir/development.services.yml" ]; then
+        if [ -f "$def_sites_dir/development.services.yml" ]; then
+            cp "$def_sites_dir/development.services.yml" "$sites_dir/development.services.yml"
+        elif [ -f "$wt_dir/$WEBROOT/core/assets/scaffold/files/development.services.yml" ]; then
+            cp "$wt_dir/$WEBROOT/core/assets/scaffold/files/development.services.yml" "$sites_dir/development.services.yml"
+        fi
     fi
 }
 
@@ -511,6 +522,9 @@ EOF
                 echo "" >> "$WEBROOT/sites/default/settings.local.php"
                 echo "require __DIR__ . '/settings.workspace.php';" >> "$WEBROOT/sites/default/settings.local.php"
             fi
+            if [ ! -f "$WEBROOT/sites/development.services.yml" ] && [ -f "$WEBROOT/core/assets/scaffold/files/development.services.yml" ]; then
+                cp "$WEBROOT/core/assets/scaffold/files/development.services.yml" "$WEBROOT/sites/development.services.yml"
+            fi
         fi
     fi
     cd ..
@@ -631,13 +645,31 @@ function cmd_switch() {
         fi
     fi
 
-    # 2. Existing worktree directory: simply switch into it
+    # 2. Existing worktree directory or branch already checked out: switch into it
+    local existing_wt=""
     if [ -d "$BRANCH" ]; then
+        existing_wt="$HUB_DIR/$BRANCH"
+    else
+        local cur_parse_wt=""
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^worktree[[:space:]]+(.*) ]]; then
+                cur_parse_wt="${BASH_REMATCH[1]}"
+            elif [[ "$line" =~ ^branch[[:space:]]+refs/heads/(.*) ]]; then
+                if [ "${BASH_REMATCH[1]}" = "$BRANCH" ]; then
+                    existing_wt="$cur_parse_wt"
+                    break
+                fi
+            fi
+        done < <(git worktree list --porcelain 2>/dev/null)
+    fi
+
+    if [ -n "$existing_wt" ] && [ -d "$existing_wt" ]; then
         if [ "$FRAMEWORK" == "drupal" ]; then
-            provision_drupal_worktree "$HUB_DIR/$BRANCH"
+            provision_drupal_worktree "$existing_wt"
         fi
-        log "Switched to worktree '$BRANCH'."
-        echo "$HUB_DIR/$BRANCH" >&3
+        local rel_wt="./${existing_wt#$HUB_DIR/}"
+        log "Switched to worktree '$rel_wt'."
+        echo "$existing_wt" >&3
         exit 0
     fi
 
@@ -693,26 +725,41 @@ function cmd_switch() {
     log "Worktree provisioned."
 
     # Database handling for new worktree
-    if [ "$GAR_AUTO_YES" == "true" ]; then
-        create_db="y"
-        log "Auto-confirming database creation for tests."
-    else
-        read -p "Create an isolated database for this branch? [y/N]: " create_db </dev/tty || true
-    fi
-    create_db=${create_db:-N}
-
-    if [[ "$create_db" =~ ^[Yy]$ ]]; then
-        DB_NAME=$(get_db_name "$BRANCH")
-        if [ "$ENV_ENGINE" == "ddev" ]; then
-            log "Cloning default database into $DB_NAME..."
-            ddev mysql -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`;" || true
-            ddev export-db --database=db | ddev import-db --database=$DB_NAME
-            log "Isolated database $DB_NAME ready."
-        else
-            log "Automated database cloning for $ENV_ENGINE is not yet implemented."
+    DB_NAME=$(get_db_name "$BRANCH")
+    local db_exists=false
+    if [ "$ENV_ENGINE" == "ddev" ]; then
+        if [ -n "$GAR_MOCK_DBS" ]; then
+            is_in_space_list "$DB_NAME" "$GAR_MOCK_DBS" && db_exists=true
+        elif ddev describe >/dev/null 2>&1; then
+            if ddev mysql -N -e "SHOW DATABASES LIKE '$DB_NAME';" 2>/dev/null | grep -q "^$DB_NAME$"; then
+                db_exists=true
+            fi
         fi
+    fi
+
+    if [ "$db_exists" = true ]; then
+        log "Found existing isolated database '$DB_NAME'. Using it."
     else
-        log "Using default shared database."
+        if [ "$GAR_AUTO_YES" == "true" ]; then
+            create_db="y"
+            log "Auto-confirming database creation for tests."
+        else
+            read -p "Create an isolated database for this branch? [Y/n]: " create_db </dev/tty || true
+        fi
+        create_db=${create_db:-Y}
+
+        if [[ "$create_db" =~ ^[Yy]$ ]]; then
+            if [ "$ENV_ENGINE" == "ddev" ]; then
+                log "Cloning default database into $DB_NAME..."
+                ddev mysql -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`;" || true
+                ddev export-db --database=db | ddev import-db --database=$DB_NAME
+                log "Isolated database $DB_NAME ready."
+            else
+                log "Automated database cloning for $ENV_ENGINE is not yet implemented."
+            fi
+        else
+            log "Using default shared database."
+        fi
     fi
 
     # Run post-provision commands on new worktree if configured
@@ -1246,7 +1293,7 @@ EOF
                     active_wts+=("$b:$found_wt")
                     skip_branch=true
                 # Check if dirty
-                elif [ -n "$(git -C "$found_wt" status --porcelain 2>/dev/null | grep -v -E '(settings\.workspace\.php|settings\.local\.php|settings\.ddev\.php)')" ]; then
+                elif [ -n "$(git -C "$found_wt" status --porcelain 2>/dev/null | grep -v -E '(settings\.workspace\.php|settings\.local\.php|settings\.ddev\.php|development\.services\.yml)')" ]; then
                     dirty_wts+=("$b:$found_wt")
                     skip_branch=true
                 else

@@ -6,6 +6,7 @@ set -e
 TEST_DIR="/tmp/gar-test-env"
 REMOTE_REPO="$TEST_DIR/remote"
 HUB_DIR="$TEST_DIR/hub"
+MOCK_DB_FILE="$TEST_DIR/mock-dbs.txt"
 GAR_BIN="$(pwd)/bin/arborist"
 
 echo "=== Git Arborist (gar) Test Suite ==="
@@ -19,13 +20,14 @@ echo "=> Setting up dummy remote..."
 mkdir -p "$REMOTE_REPO"
 cd "$REMOTE_REPO"
 git init --initial-branch=develop >/dev/null
-mkdir .ddev docroot docroot/sites docroot/sites/default
+mkdir -p .ddev docroot docroot/sites docroot/sites/default docroot/core/assets/scaffold/files
 cat << 'EOF' > .ddev/config.yaml
 name: test-project
 type: drupal10
 docroot: docroot
 EOF
 echo "<?php // Settings file" > docroot/sites/default/settings.php
+echo "services: {}" > docroot/core/assets/scaffold/files/development.services.yml
 git add .
 git commit -m "Initial commit" >/dev/null
 cd - >/dev/null
@@ -481,6 +483,10 @@ if [ ! -f "$HUB_DIR/$SLASH_BRANCH/docroot/sites/default/settings.workspace.php" 
     echo "❌ settings.workspace.php not provisioned in $SLASH_BRANCH"
     exit 1
 fi
+if [ ! -f "$HUB_DIR/$SLASH_BRANCH/docroot/sites/development.services.yml" ]; then
+    echo "❌ development.services.yml not provisioned in $SLASH_BRANCH"
+    exit 1
+fi
 
 # Test gar db info from inside the worktree root
 cd "$HUB_DIR/$SLASH_BRANCH"
@@ -513,6 +519,20 @@ if [ -d "$HUB_DIR/$SLASH_BRANCH" ]; then
 fi
 
 echo "✅ Slashed Branch Resolution and Drush Wrapper passed!"
+
+# 12. Test: Pre-existing database detection on switch
+echo ""
+echo "=> Testing: Pre-existing database detection during switch"
+echo "db_preexisting_feature" >> "$MOCK_DB_FILE"
+EXISTING_SWITCH_OUT=$("$GAR_BIN" switch -c preexisting-feature 2>&1)
+if ! echo "$EXISTING_SWITCH_OUT" | grep -q "Found existing isolated database 'db_preexisting_feature'. Using it."; then
+    echo "❌ Pre-existing database detection failed! Got:"
+    echo "$EXISTING_SWITCH_OUT"
+    exit 1
+fi
+cd "$HUB_DIR"
+"$GAR_BIN" remove -f preexisting-feature
+echo "✅ Pre-existing database detection passed!"
 
 echo ""
 echo "🎉 All tests passed successfully!"
