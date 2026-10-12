@@ -45,6 +45,9 @@ Because operating systems prevent child CLI processes from changing the working 
 source ~/.zshrc   # or ~/.bashrc
 ```
 
+* To re-install or update without confirmation prompt: `./install.sh -f`
+* To remove the shell integration: `./install.sh --uninstall`
+
 ### Manual Installation
 If you would rather install this manually:
 

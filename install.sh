@@ -10,6 +10,36 @@ if [ ! -f "$BIN_PATH" ]; then
     exit 1
 fi
 
+FORCE=false
+UNINSTALL=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -f|--force)
+            FORCE=true
+            shift
+            ;;
+        --uninstall)
+            UNINSTALL=true
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: ./install.sh [options]"
+            echo ""
+            echo "Options:"
+            echo "  -f, --force     Force install / overwrite existing integration without prompting"
+            echo "  --uninstall     Remove Git Arborist shell integration from profile"
+            echo "  -h, --help      Show this help message"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: ./install.sh [-f|--force] [--uninstall]"
+            exit 1
+            ;;
+    esac
+done
+
 # Detect Shell Profile
 PROFILE=""
 if [ -n "$ZSH_VERSION" ] || [ -f "$HOME/.zshrc" ]; then
@@ -20,16 +50,49 @@ else
     PROFILE="$HOME/.profile"
 fi
 
-HOOK_LINE="eval \"\$(\"$BIN_PATH\" hook)\""
-
 DISPLAY_PROFILE="${PROFILE/#$HOME/~}"
+
+if [ "$UNINSTALL" = true ]; then
+    echo "🌳 Git Arborist Shell Integration"
+    echo "Target profile: $DISPLAY_PROFILE"
+    echo ""
+    if [ -f "$PROFILE" ] && grep -q "arborist.*hook\|gar.*hook\|wrapper\.sh" "$PROFILE" 2>/dev/null; then
+        sed -i.bak '/# Git Arborist/d; /arborist.*hook/d; /gar.*hook/d; /wrapper\.sh/d' "$PROFILE" && rm -f "$PROFILE.bak"
+        echo "Successfully removed from $DISPLAY_PROFILE!"
+        echo ""
+        echo "To apply changes immediately, run:"
+        echo "  source $DISPLAY_PROFILE"
+    else
+        echo "Git Arborist integration not found in $DISPLAY_PROFILE."
+    fi
+    exit 0
+fi
+
+HOOK_LINE="eval \"\$(\"$BIN_PATH\" hook)\""
 
 echo "🌳 Git Arborist Shell Integration"
 echo "Target profile: $DISPLAY_PROFILE"
 echo ""
 
-if grep -q "arborist.*hook\|gar.*hook\|wrapper\.sh" "$PROFILE" 2>/dev/null; then
-    echo "Shell integration already detected in $DISPLAY_PROFILE."
+ALREADY_INSTALLED=false
+if [ -f "$PROFILE" ] && grep -q "arborist.*hook\|gar.*hook\|wrapper\.sh" "$PROFILE" 2>/dev/null; then
+    ALREADY_INSTALLED=true
+fi
+
+if [ "$ALREADY_INSTALLED" = true ]; then
+    if [ "$FORCE" = false ]; then
+        read -p "Shell integration already detected in $DISPLAY_PROFILE. Reinstall / update? [Y/n]: " update_confirm || true
+        update_confirm=${update_confirm:-Y}
+        if [[ ! "$update_confirm" =~ ^[Yy]$ ]]; then
+            echo "Installation cancelled."
+            exit 0
+        fi
+    fi
+    sed -i.bak '/# Git Arborist/d; /arborist.*hook/d; /gar.*hook/d; /wrapper\.sh/d' "$PROFILE" && rm -f "$PROFILE.bak"
+    echo "" >> "$PROFILE"
+    echo "# Git Arborist" >> "$PROFILE"
+    echo "$HOOK_LINE" >> "$PROFILE"
+    echo "Successfully updated in $DISPLAY_PROFILE!"
 else
     echo "" >> "$PROFILE"
     echo "# Git Arborist" >> "$PROFILE"
