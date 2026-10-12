@@ -534,6 +534,32 @@ cd "$HUB_DIR"
 "$GAR_BIN" remove -f preexisting-feature
 echo "✅ Pre-existing database detection passed!"
 
+# 13. Test: gar sync (programmatic project update and healing)
+echo ""
+echo "=> Testing: gar sync (programmatic project update and healing)"
+# Intentionally remove a wrapper and a worktree scaffold file to test healing
+rm -f "$HUB_DIR/.ddev/commands/web/drush"
+rm -f "$HUB_DIR/develop/docroot/sites/development.services.yml"
+
+SYNC_OUT=$("$GAR_BIN" sync 2>&1)
+if ! echo "$SYNC_OUT" | grep -q "Arborist hub synchronized successfully!"; then
+    echo "❌ gar sync failed! Got:"
+    echo "$SYNC_OUT"
+    exit 1
+fi
+
+if [ ! -x "$HUB_DIR/.ddev/commands/web/drush" ]; then
+    echo "❌ gar sync did not restore .ddev/commands/web/drush!"
+    exit 1
+fi
+
+if [ ! -f "$HUB_DIR/develop/docroot/sites/development.services.yml" ]; then
+    echo "❌ gar sync did not heal development.services.yml in develop worktree!"
+    exit 1
+fi
+
+echo "✅ gar sync passed!"
+
 echo ""
 echo "🎉 All tests passed successfully!"
 

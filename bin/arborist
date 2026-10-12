@@ -22,7 +22,7 @@ Commands:
   -m [old_branch] <new>    Move/rename a worktree, branch, and database
   remove [options] <branch> Remove a worktree, branch, and drop isolated database (-f, -y)
   db <action> [options]    Database operations (import/export) (aliases: dbi, dbe)
-  sync-ddev                Synchronize Hub .ddev config from tracking branch
+  sync                     Synchronize Hub configs, wrappers, hooks, and worktree scaffolds
   install-hooks            Install Git hooks in the Hub for automatic pruning
   hook                     Output shell integration hook for eval
   -h, --help, help         Show this help message
@@ -115,7 +115,8 @@ if [ -n "\$ZSH_VERSION" ]; then
             'db:Database operations (import/export)'
             'dbi:Import database dump'
             'dbe:Export database dump'
-            'sync-ddev:Synchronize Hub .ddev config'
+            'sync:Synchronize Hub configs, wrappers, and scaffolds'
+            'sync-ddev:Synchronize Hub configs, wrappers, and scaffolds'
             'install-hooks:Install Git hooks in the Hub'
             '-m:Move or rename a worktree and database'
         )
@@ -155,7 +156,7 @@ elif [ -n "\$BASH_VERSION" ]; then
         cur="\${COMP_WORDS[COMP_CWORD]}"
         prev="\${COMP_WORDS[COMP_CWORD-1]}"
 
-        local commands="init switch list prune remove db dbi dbe sync-ddev install-hooks -m -h help"
+        local commands="init switch list prune remove db dbi dbe sync sync-ddev install-hooks -m -h help"
 
         if [ "\$COMP_CWORD" -eq 1 ]; then
             COMPREPLY=( \$(compgen -W "\$commands" -- "\$cur") )
@@ -1435,41 +1436,96 @@ EOF
     log "✅ Pruning complete: removed $count_wts worktree(s), deleted $count_branches branch(es), dropped $count_dbs database(s)."
 }
 
-function cmd_sync_ddev() {
+function cmd_sync() {
     HUB_DIR=$(check_hub_dir)
     cd "$HUB_DIR"
     
     source "$HUB_DIR/.arborist" 2>/dev/null || true
     ENV_ENGINE=${ENV_ENGINE:-ddev}
-    
-    if [ "$ENV_ENGINE" != "ddev" ]; then
-        log "sync-ddev is specifically for DDEV environments."
-        exit 0
+    DEFAULT_BRANCH=${DEFAULT_BRANCH:-develop}
+    FRAMEWORK=${FRAMEWORK:-drupal}
+    WEBROOT=${WEBROOT:-docroot}
+
+    log "🌳 Synchronizing Arborist Hub configuration..."
+
+    # 1. Sync Git configuration and hooks
+    log "  • Updating Git hooks and fetch configurations..."
+    install_git_hooks "$HUB_DIR"
+
+    # 2. Sync Git exclude patterns
+    log "  • Updating Git exclude patterns..."
+    mkdir -p "$HUB_DIR/.git/info"
+    touch "$HUB_DIR/.git/info/exclude"
+    for pattern in "settings.workspace.php" "settings.local.php" "settings.ddev.php" "development.services.yml"; do
+        if ! grep -q "^$pattern$" "$HUB_DIR/.git/info/exclude" 2>/dev/null; then
+            echo "$pattern" >> "$HUB_DIR/.git/info/exclude"
+        fi
+    done
+
+    # 3. Sync Environment Engine configurations
+    if [ "$ENV_ENGINE" == "ddev" ]; then
+        log "  • Updating DDEV command wrappers..."
+        if [ -d "$TEMPLATES_DIR/ddev-commands" ]; then
+            mkdir -p .ddev/commands/web
+            for cmd_file in "$TEMPLATES_DIR/ddev-commands"/*; do
+                [ -f "$cmd_file" ] || continue
+                cp "$cmd_file" ".ddev/commands/web/$(basename "$cmd_file")"
+                chmod +x ".ddev/commands/web/$(basename "$cmd_file")"
+            done
+        fi
+
+        log "  • Updating Nginx wildcard configuration..."
+        mkdir -p .ddev/nginx_full
+        sed "s|/var/www/html/\$active_branch/docroot|/var/www/html/\$active_branch/$WEBROOT|g" "$TEMPLATES_DIR/workspace-nginx.conf" > .ddev/nginx_full/workspace-nginx.conf
+
+        log "  • Verifying DDEV wildcard routing and docroot..."
+        local project_name=""
+        if [ -f ".ddev/config.yaml" ]; then
+            project_name=$(grep -E "^name:" .ddev/config.yaml | head -n1 | sed -E 's/^name:[[:space:]]*//; s/["'\'' ]//g')
+        fi
+        if [ -z "$project_name" ]; then
+            project_name=$(basename "$PWD")
+        fi
+
+        ddev config --additional-hostnames="*.$project_name" >/dev/null 2>&1 || true
+        ddev config --docroot="$DEFAULT_BRANCH/$WEBROOT" >/dev/null 2>&1 || true
     fi
-    
-    log "Syncing .ddev configuration from the tracking branch..."
-    # Extract cleanly from tracking branch (preserve .arborist configuration if set)
-    if [ -z "$DEFAULT_BRANCH" ]; then
-        DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' || true)
-        DEFAULT_BRANCH=${DEFAULT_BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)}
-        DEFAULT_BRANCH=${DEFAULT_BRANCH:-develop}
+
+    # 4. Sync and heal all active worktrees
+    log "  • Auditing and healing active worktrees..."
+    local cur_wt=""
+    local is_bare=false
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ "$line" =~ ^worktree[[:space:]]+(.*) ]]; then
+            cur_wt="${BASH_REMATCH[1]}"
+            is_bare=false
+        elif [ "$line" = "bare" ]; then
+            is_bare=true
+        elif [ -z "$line" ] && [ -n "$cur_wt" ]; then
+            if [ "$is_bare" = false ] && [ -d "$cur_wt" ]; then
+                if [ "$FRAMEWORK" == "drupal" ]; then
+                    provision_drupal_worktree "$cur_wt"
+                fi
+            fi
+            cur_wt=""
+            is_bare=false
+        fi
+    done < <(git worktree list --porcelain 2>/dev/null && echo "")
+    if [ -n "$cur_wt" ] && [ "$is_bare" = false ] && [ -d "$cur_wt" ]; then
+        if [ "$FRAMEWORK" == "drupal" ]; then
+            provision_drupal_worktree "$cur_wt"
+        fi
     fi
-    if [ "$DEFAULT_BRANCH" == "HEAD" ]; then
-        DEFAULT_BRANCH="develop"
+
+    log ""
+    log "✅ Arborist hub synchronized successfully!"
+    if [ "$ENV_ENGINE" == "ddev" ] && ddev describe >/dev/null 2>&1; then
+        log "💡 Run 'ddev restart' to reload Nginx and container configurations."
     fi
-    
-    git archive "$DEFAULT_BRANCH" .ddev/ | tar -x || true
-    if [ -d "$TEMPLATES_DIR/ddev-commands" ]; then
-        mkdir -p .ddev/commands/web
-        for cmd_file in "$TEMPLATES_DIR/ddev-commands"/*; do
-            [ -f "$cmd_file" ] || continue
-            cp "$cmd_file" ".ddev/commands/web/$(basename "$cmd_file")"
-            chmod +x ".ddev/commands/web/$(basename "$cmd_file")"
-        done
-    fi
-    
-    log ".ddev synced successfully. Restarting DDEV..."
-    ddev restart
+}
+
+function cmd_sync_ddev() {
+    cmd_sync "$@"
 }
 
 function cmd_m() {
@@ -1822,8 +1878,8 @@ case "$COMMAND" in
     -m)
         cmd_m "$@"
         ;;
-    sync-ddev)
-        cmd_sync_ddev "$@"
+    sync|update|sync-ddev)
+        cmd_sync "$@"
         ;;
     db)
         cmd_db "$@"

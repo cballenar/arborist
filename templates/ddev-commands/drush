@@ -11,6 +11,7 @@ CUR_DIR="$PWD"
 while [ "$CUR_DIR" != "/var/www" ] && [ "$CUR_DIR" != "/" ]; do
     if [ -x "$CUR_DIR/vendor/bin/drush" ]; then
         DRUSH_PATH="$CUR_DIR/vendor/bin/drush"
+        WT_DIR="$CUR_DIR"
         break
     fi
     CUR_DIR=$(dirname "$CUR_DIR")
@@ -21,13 +22,46 @@ if [ -z "$DRUSH_PATH" ] && [ -f "/var/www/html/.arborist" ]; then
     DEFAULT_BRANCH=$(grep '^DEFAULT_BRANCH=' /var/www/html/.arborist | cut -d'=' -f2 | tr -d '"' || echo "develop")
     if [ -x "/var/www/html/$DEFAULT_BRANCH/vendor/bin/drush" ]; then
         DRUSH_PATH="/var/www/html/$DEFAULT_BRANCH/vendor/bin/drush"
+        WT_DIR="/var/www/html/$DEFAULT_BRANCH"
     fi
 fi
 
+# Detect workspace URI if not already passed in arguments
+HAS_URI=false
+for arg in "$@"; do
+    if [[ "$arg" == --uri=* ]] || [[ "$arg" == -l=* ]]; then
+        HAS_URI=true
+        break
+    fi
+done
+
+URI_ARG=()
+if [ "$HAS_URI" = false ] && [ -n "$DDEV_PRIMARY_URL" ]; then
+    WT_NAME=""
+    if [ -n "$WT_DIR" ] && [ "$WT_DIR" != "/var/www/html" ]; then
+        WT_NAME="${WT_DIR#/var/www/html/}"
+    elif [ "$PWD" != "/var/www/html" ] && [[ "$PWD" == "/var/www/html/"* ]]; then
+        WT_NAME="${PWD#/var/www/html/}"
+    fi
+    WT_NAME="${WT_NAME%/}"
+
+    SCHEME="${DDEV_SCHEME:-https}"
+    BASE_DOMAIN="${DDEV_PRIMARY_URL#*://}"
+    BASE_DOMAIN="${BASE_DOMAIN%%/*}"
+
+    if [ -n "$WT_NAME" ]; then
+        SUBDOMAIN=$(echo "$WT_NAME" | tr '/' '-')
+        TARGET_URI="${SCHEME}://${SUBDOMAIN}.${BASE_DOMAIN}"
+    else
+        TARGET_URI="$DDEV_PRIMARY_URL"
+    fi
+    URI_ARG=("--uri=$TARGET_URI")
+fi
+
 if [ -n "$DRUSH_PATH" ]; then
-    exec "$DRUSH_PATH" "$@"
+    exec "$DRUSH_PATH" "${URI_ARG[@]}" "$@"
 elif command -v drush >/dev/null 2>&1; then
-    exec drush "$@"
+    exec drush "${URI_ARG[@]}" "$@"
 else
     echo "drush is not available in $PWD. Ensure drush is installed in your worktree." >&2
     exit 1
