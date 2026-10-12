@@ -595,6 +595,16 @@ fi
 
 echo "✅ gar sync passed!"
 
+# 14. Test: Mutagen sync daemon flush
+echo ""
+echo "=> Testing: Mutagen sync daemon flush"
+if ! grep -q "^mutagen sync" "/tmp/gar-test-env/ddev.log"; then
+    echo "❌ flush_env_sync did not call 'ddev mutagen sync'! Check ddev.log:"
+    cat "/tmp/gar-test-env/ddev.log"
+    exit 1
+fi
+echo "✅ Mutagen sync daemon flush passed!"
+
 echo ""
 echo "🎉 All tests passed successfully!"
 

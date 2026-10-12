@@ -251,6 +251,14 @@ function is_in_space_list() {
     return 1
 }
 
+function flush_env_sync() {
+    if [ "$ENV_ENGINE" == "ddev" ]; then
+        if command -v ddev >/dev/null 2>&1 && ddev describe >/dev/null 2>&1; then
+            ddev mutagen sync >/dev/null 2>&1 || true
+        fi
+    fi
+}
+
 function provision_drupal_worktree() {
     local wt_dir="$1"
     local site_dir="$wt_dir/$WEBROOT/sites/default"
@@ -723,6 +731,8 @@ function cmd_switch() {
         provision_drupal_worktree "$HUB_DIR/$BRANCH"
     fi
 
+    flush_env_sync
+
     log "Worktree provisioned."
 
     # Database handling for new worktree
@@ -765,6 +775,7 @@ function cmd_switch() {
 
     # Run post-provision commands on new worktree if configured
     if [ -n "$POST_PROVISION_CMD" ]; then
+        flush_env_sync
         log "Running post-provision commands in '$BRANCH'..."
         (
             set -e
@@ -1517,6 +1528,8 @@ function cmd_sync() {
         fi
     fi
 
+    flush_env_sync
+
     log ""
     log "✅ Arborist hub synchronized successfully!"
     if [ "$ENV_ENGINE" == "ddev" ] && ddev describe >/dev/null 2>&1; then
@@ -1615,6 +1628,8 @@ function cmd_m() {
             log "Automated database moving for $ENV_ENGINE is not yet implemented."
         fi
     fi
+
+    flush_env_sync
 
     log "Worktree moved to '$NEW_BRANCH'."
     
