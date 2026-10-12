@@ -5,25 +5,57 @@
 ## ExecRaw: true
 ## HostWorkingDir: true
 
-# Look for vendor/bin/drush starting from current working directory up to /var/www/html
-DRUSH_PATH=""
-CUR_DIR="$PWD"
-while [ "$CUR_DIR" != "/var/www" ] && [ "$CUR_DIR" != "/" ]; do
-    if [ -x "$CUR_DIR/vendor/bin/drush" ]; then
-        DRUSH_PATH="$CUR_DIR/vendor/bin/drush"
-        WT_DIR="$CUR_DIR"
+# Detect Hub root
+HUB_ROOT="/var/www/html"
+SEARCH_DIR="$PWD"
+while [ "$SEARCH_DIR" != "/" ]; do
+    if [ -f "$SEARCH_DIR/.arborist" ] || [ -d "$SEARCH_DIR/.ddev" ]; then
+        HUB_ROOT="$SEARCH_DIR"
         break
     fi
-    CUR_DIR=$(dirname "$CUR_DIR")
+    SEARCH_DIR=$(dirname "$SEARCH_DIR")
 done
+[ -d "$HUB_ROOT" ] && HUB_ROOT=$(cd "$HUB_ROOT" && pwd -P)
 
-# If not found and at hub root (/var/www/html), try default branch
-if [ -z "$DRUSH_PATH" ] && [ -f "/var/www/html/.arborist" ]; then
-    DEFAULT_BRANCH=$(grep '^DEFAULT_BRANCH=' /var/www/html/.arborist | cut -d'=' -f2 | tr -d '"' || echo "develop")
-    if [ -x "/var/www/html/$DEFAULT_BRANCH/vendor/bin/drush" ]; then
-        DRUSH_PATH="/var/www/html/$DEFAULT_BRANCH/vendor/bin/drush"
-        WT_DIR="/var/www/html/$DEFAULT_BRANCH"
+# Detect worktree directory (prefer git rev-parse, fallback to directory traversal)
+WT_DIR=""
+GIT_TOP=$(git rev-parse --show-toplevel 2>/dev/null || true)
+if [ -n "$GIT_TOP" ]; then
+    [ -d "$GIT_TOP" ] && GIT_TOP=$(cd "$GIT_TOP" && pwd -P)
+    if [ "$GIT_TOP" != "$HUB_ROOT" ]; then
+        WT_DIR="$GIT_TOP"
     fi
+fi
+
+# Look for vendor/bin/drush in current worktree or upwards
+DRUSH_PATH=""
+if [ -n "$WT_DIR" ] && [ -x "$WT_DIR/vendor/bin/drush" ]; then
+    DRUSH_PATH="$WT_DIR/vendor/bin/drush"
+fi
+
+if [ -z "$DRUSH_PATH" ]; then
+    CUR_DIR="$PWD"
+    while [ "$CUR_DIR" != "$HUB_ROOT" ] && [ "$CUR_DIR" != "/" ]; do
+        if [ -x "$CUR_DIR/vendor/bin/drush" ]; then
+            DRUSH_PATH="$CUR_DIR/vendor/bin/drush"
+            [ -z "$WT_DIR" ] && WT_DIR="$CUR_DIR"
+            break
+        fi
+        CUR_DIR=$(dirname "$CUR_DIR")
+    done
+fi
+
+# Detect default branch from .arborist configuration
+DEFAULT_BRANCH=""
+if [ -f "$HUB_ROOT/.arborist" ]; then
+    DEFAULT_BRANCH=$(grep '^DEFAULT_BRANCH=' "$HUB_ROOT/.arborist" | cut -d'=' -f2 | tr -d '"' 2>/dev/null || true)
+fi
+DEFAULT_BRANCH="${DEFAULT_BRANCH:-develop}"
+
+# If not found and at hub root, try default branch
+if [ -z "$DRUSH_PATH" ] && [ -x "$HUB_ROOT/$DEFAULT_BRANCH/vendor/bin/drush" ]; then
+    DRUSH_PATH="$HUB_ROOT/$DEFAULT_BRANCH/vendor/bin/drush"
+    [ -z "$WT_DIR" ] && WT_DIR="$HUB_ROOT/$DEFAULT_BRANCH"
 fi
 
 # Detect workspace URI if not already passed in arguments
@@ -38,10 +70,10 @@ done
 URI_ARG=()
 if [ "$HAS_URI" = false ] && [ -n "$DDEV_PRIMARY_URL" ]; then
     WT_NAME=""
-    if [ -n "$WT_DIR" ] && [ "$WT_DIR" != "/var/www/html" ]; then
-        WT_NAME="${WT_DIR#/var/www/html/}"
-    elif [ "$PWD" != "/var/www/html" ] && [[ "$PWD" == "/var/www/html/"* ]]; then
-        WT_NAME="${PWD#/var/www/html/}"
+    if [ -n "$WT_DIR" ] && [ "$WT_DIR" != "$HUB_ROOT" ]; then
+        WT_NAME="${WT_DIR#$HUB_ROOT/}"
+    elif [ "$PWD" != "$HUB_ROOT" ] && [[ "$PWD" == "$HUB_ROOT/"* ]]; then
+        WT_NAME="${PWD#$HUB_ROOT/}"
     fi
     WT_NAME="${WT_NAME%/}"
 
@@ -49,7 +81,7 @@ if [ "$HAS_URI" = false ] && [ -n "$DDEV_PRIMARY_URL" ]; then
     BASE_DOMAIN="${DDEV_PRIMARY_URL#*://}"
     BASE_DOMAIN="${BASE_DOMAIN%%/*}"
 
-    if [ -n "$WT_NAME" ]; then
+    if [ -n "$WT_NAME" ] && [ "$WT_NAME" != "$DEFAULT_BRANCH" ]; then
         SUBDOMAIN=$(echo "$WT_NAME" | tr '/' '-')
         TARGET_URI="${SCHEME}://${SUBDOMAIN}.${BASE_DOMAIN}"
     else

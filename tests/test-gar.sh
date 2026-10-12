@@ -74,6 +74,13 @@ if [ "$1" = "mysql" ]; then
 fi
 EOF
 chmod +x "$TEST_DIR/bin/ddev"
+
+cat << 'EOF' > "$TEST_DIR/bin/drush"
+#!/bin/bash
+echo "[MOCK DRUSH] $*"
+EOF
+chmod +x "$TEST_DIR/bin/drush"
+chmod +x "$TEST_DIR/bin/ddev"
 echo "db" > "$TEST_DIR/mock-dbs.txt"
 
 # Setup auto-confirm for interactive prompts
@@ -511,6 +518,24 @@ if ! echo "$INFO_SUB" | grep -q "Target Database:    db_bsph_dwc_27_test_feature
     exit 1
 fi
 
+# Verify Drush wrapper URI generation for feature worktree
+cd "$HUB_DIR/$SLASH_BRANCH"
+DRUSH_WT_OUT=$(DDEV_PRIMARY_URL="https://test-project.ddev.site" DDEV_SCHEME="https" "$HUB_DIR/.ddev/commands/web/drush" status 2>&1)
+if ! echo "$DRUSH_WT_OUT" | grep -q -- "--uri=https://bsph-dwc-27-test-feature.test-project.ddev.site"; then
+    echo "❌ Drush wrapper failed to pass isolated URI for feature worktree! Got:"
+    echo "$DRUSH_WT_OUT"
+    exit 1
+fi
+
+# Verify Drush wrapper URI generation for default branch worktree
+cd "$HUB_DIR/develop"
+DRUSH_DEV_OUT=$(DDEV_PRIMARY_URL="https://test-project.ddev.site" DDEV_SCHEME="https" "$HUB_DIR/.ddev/commands/web/drush" status 2>&1)
+if ! echo "$DRUSH_DEV_OUT" | grep -q -- "--uri=https://test-project.ddev.site"; then
+    echo "❌ Drush wrapper failed to pass primary URI for develop worktree! Got:"
+    echo "$DRUSH_DEV_OUT"
+    exit 1
+fi
+
 cd "$HUB_DIR"
 "$GAR_BIN" remove -f "$SLASH_BRANCH"
 if [ -d "$HUB_DIR/$SLASH_BRANCH" ]; then
@@ -555,6 +580,16 @@ fi
 
 if [ ! -f "$HUB_DIR/develop/docroot/sites/development.services.yml" ]; then
     echo "❌ gar sync did not heal development.services.yml in develop worktree!"
+    exit 1
+fi
+
+if ! grep -q "/var/www/nonexistent" "$HUB_DIR/.ddev/nginx_full/workspace-nginx.conf"; then
+    echo "❌ gar sync did not update .ddev/nginx_full/workspace-nginx.conf with guarded nested logic!"
+    exit 1
+fi
+
+if ! grep -q 'if ($branch = "develop")' "$HUB_DIR/.ddev/nginx_full/workspace-nginx.conf"; then
+    echo "❌ gar sync did not configure default branch redirect in workspace-nginx.conf!"
     exit 1
 fi
 

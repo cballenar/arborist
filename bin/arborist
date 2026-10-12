@@ -533,8 +533,8 @@ EOF
     if [ "$ENV_ENGINE" == "ddev" ]; then
         log "Injecting wildcard Nginx config..."
         mkdir -p .ddev/nginx_full
-        # Dynamically inject the webroot into the nginx template
-        sed "s|/var/www/html/\$active_branch/docroot|/var/www/html/\$active_branch/$WEBROOT|g" "$TEMPLATES_DIR/workspace-nginx.conf" > .ddev/nginx_full/workspace-nginx.conf
+        # Dynamically inject the webroot and default branch into the nginx template
+        sed -e "s|/docroot|/$WEBROOT|g" -e "s|DEFAULT_BRANCH_PLACEHOLDER|$DEFAULT_BRANCH|g" "$TEMPLATES_DIR/workspace-nginx.conf" > .ddev/nginx_full/workspace-nginx.conf
 
         PROJECT_NAME=""
         if [ -f ".ddev/config.yaml" ]; then
@@ -1476,7 +1476,7 @@ function cmd_sync() {
 
         log "  • Updating Nginx wildcard configuration..."
         mkdir -p .ddev/nginx_full
-        sed "s|/var/www/html/\$active_branch/docroot|/var/www/html/\$active_branch/$WEBROOT|g" "$TEMPLATES_DIR/workspace-nginx.conf" > .ddev/nginx_full/workspace-nginx.conf
+        sed -e "s|/docroot|/$WEBROOT|g" -e "s|DEFAULT_BRANCH_PLACEHOLDER|$DEFAULT_BRANCH|g" "$TEMPLATES_DIR/workspace-nginx.conf" > .ddev/nginx_full/workspace-nginx.conf
 
         log "  • Verifying DDEV wildcard routing and docroot..."
         local project_name=""
