@@ -524,6 +524,25 @@ if ! echo "$INFO_SUB" | grep -q "Target Database:    db_bsph_dwc_27_test_feature
     exit 1
 fi
 
+# Verify environment_indicator recipe in settings.workspace.php
+if ! grep -q "environment_indicator.indicator" "$HUB_DIR/$SLASH_DIR/docroot/sites/default/settings.workspace.php"; then
+    echo "❌ environment_indicator recipe not injected in settings.workspace.php"
+    exit 1
+fi
+
+if command -v php >/dev/null 2>&1; then
+    mkdir -p "$HUB_DIR/$SLASH_DIR/docroot/modules/contrib/environment_indicator"
+    ENV_NAME_OUT=$(php -r "
+        chdir('$HUB_DIR/$SLASH_DIR/docroot/sites/default');
+        require 'settings.workspace.php';
+        echo isset(\$config['environment_indicator.indicator']['name']) ? \$config['environment_indicator.indicator']['name'] : 'none';
+    ")
+    if [ "$ENV_NAME_OUT" != "$SLASH_BRANCH" ]; then
+        echo "❌ environment_indicator name override failed! Expected '$SLASH_BRANCH', got '$ENV_NAME_OUT'"
+        exit 1
+    fi
+fi
+
 # Verify Drush wrapper URI generation for feature worktree
 cd "$HUB_DIR/$SLASH_DIR"
 DRUSH_WT_OUT=$(DDEV_PRIMARY_URL="https://test-project.ddev.site" DDEV_SCHEME="https" "$HUB_DIR/.ddev/commands/web/drush" status 2>&1)

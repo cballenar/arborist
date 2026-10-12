@@ -287,12 +287,10 @@ function provision_drupal_worktree() {
     done
 
     # 1. settings.workspace.php
-    if [ ! -f "$site_dir/settings.workspace.php" ]; then
-        if [ -f "$def_site_dir/settings.workspace.php" ]; then
-            cp "$def_site_dir/settings.workspace.php" "$site_dir/settings.workspace.php"
-        elif [ -f "$TEMPLATES_DIR/settings.workspace.php" ]; then
-            sed "s/'develop'/'$DEFAULT_BRANCH'/g" "$TEMPLATES_DIR/settings.workspace.php" > "$site_dir/settings.workspace.php"
-        fi
+    if [ -f "$TEMPLATES_DIR/settings.workspace.php" ]; then
+        sed "s/'develop'/'$DEFAULT_BRANCH'/g" "$TEMPLATES_DIR/settings.workspace.php" > "$site_dir/settings.workspace.php"
+    elif [ ! -f "$site_dir/settings.workspace.php" ] && [ -f "$def_site_dir/settings.workspace.php" ]; then
+        cp "$def_site_dir/settings.workspace.php" "$site_dir/settings.workspace.php"
     fi
 
     # 2. settings.ddev.php
