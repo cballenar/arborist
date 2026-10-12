@@ -65,6 +65,11 @@ if [ ! -f "develop/docroot/sites/default/settings.local.php" ]; then
     exit 1
 fi
 
+if [ ! -f "develop/docroot/sites/default/settings.workspace.php" ] || ! grep -q "\$workspace_branch = 'develop';" "develop/docroot/sites/default/settings.workspace.php"; then
+    echo "❌ Config injection failed: settings.workspace.php not properly injected with develop"
+    exit 1
+fi
+
 if ! grep -q "\*\.hub" ".ddev/config.yaml" 2>/dev/null; then
     echo "❌ Wildcard routing failed: additional_hostnames not found in .ddev/config.yaml"
     exit 1
@@ -134,6 +139,34 @@ if ! grep -q "DROP DATABASE IF EXISTS \`db_feature_2\`" "$TEST_DIR/ddev.log"; th
 fi
 
 echo "✅ Remove passed!"
+
+# 7. Test: Init with custom tracking branch (main)
+echo ""
+echo "=> Testing: gar init with tracking branch 'main'"
+REMOTE_MAIN_REPO="$TEST_DIR/remote-main"
+HUB_MAIN_DIR="$TEST_DIR/hub-main"
+mkdir -p "$REMOTE_MAIN_REPO"
+cd "$REMOTE_MAIN_REPO"
+git init --initial-branch=main >/dev/null
+mkdir .ddev docroot docroot/sites docroot/sites/default
+echo "config" > .ddev/config.yaml
+echo "<?php // Settings file" > docroot/sites/default/settings.php
+git add .
+git commit -m "Initial commit" >/dev/null
+cd - >/dev/null
+
+"$GAR_BIN" init "$REMOTE_MAIN_REPO" "$HUB_MAIN_DIR"
+cd "$HUB_MAIN_DIR"
+
+if ! grep -q "\$workspace_branch = 'main';" "main/docroot/sites/default/settings.workspace.php"; then
+    echo "❌ Dynamic tracking branch failed: settings.workspace.php does not reference main"
+    exit 1
+fi
+if grep -q "'develop'" "main/docroot/sites/default/settings.workspace.php"; then
+    echo "❌ Dynamic tracking branch failed: develop was not replaced in settings.workspace.php"
+    exit 1
+fi
+echo "✅ Dynamic tracking branch test passed!"
 
 echo ""
 echo "🎉 All tests passed successfully!"

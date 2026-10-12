@@ -215,7 +215,7 @@ EOF
         if [ "$GAR_AUTO_YES" == "true" ] || { read -p "Auto-inject Arborist DB routing into $WEBROOT/sites/default/settings.local.php? [Y/n]: " inject_db </dev/tty && [[ "${inject_db:-Y}" =~ ^[Yy]$ ]]; }; then
             log "Injecting settings.workspace.php..."
             mkdir -p "$WEBROOT/sites/default"
-            cp "$TEMPLATES_DIR/settings.workspace.php" "$WEBROOT/sites/default/"
+            sed "s/'develop'/'$DEFAULT_BRANCH'/g" "$TEMPLATES_DIR/settings.workspace.php" > "$WEBROOT/sites/default/settings.workspace.php"
             touch "$WEBROOT/sites/default/settings.local.php"
             if ! grep -q "settings.workspace.php" "$WEBROOT/sites/default/settings.local.php"; then
                 echo "" >> "$WEBROOT/sites/default/settings.local.php"
