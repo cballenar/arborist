@@ -479,24 +479,30 @@ fi
 echo "POST_PROVISION_CMD=\"\"" >> "$HUB_DIR/.arborist"
 
 SLASH_BRANCH="bsph/dwc-27-test-feature"
+SLASH_DIR="bsph-dwc-27-test-feature"
 SLASH_TARGET=$("$GAR_BIN" switch -c "$SLASH_BRANCH")
-if [ "$SLASH_TARGET" != "$HUB_DIR/$SLASH_BRANCH" ] || [ ! -d "$HUB_DIR/$SLASH_BRANCH" ]; then
-    echo "❌ Slashed branch switch failed: expected $HUB_DIR/$SLASH_BRANCH"
+if [ "$SLASH_TARGET" != "$HUB_DIR/$SLASH_DIR" ] || [ ! -d "$HUB_DIR/$SLASH_DIR" ]; then
+    echo "❌ Slashed branch switch failed: expected $HUB_DIR/$SLASH_DIR, got $SLASH_TARGET"
+    exit 1
+fi
+
+if [ -d "$HUB_DIR/bsph" ]; then
+    echo "❌ Slashed branch switch created nested directory 'bsph'"
     exit 1
 fi
 
 # Verify Drupal files were provisioned in worktree
-if [ ! -f "$HUB_DIR/$SLASH_BRANCH/docroot/sites/default/settings.workspace.php" ]; then
-    echo "❌ settings.workspace.php not provisioned in $SLASH_BRANCH"
+if [ ! -f "$HUB_DIR/$SLASH_DIR/docroot/sites/default/settings.workspace.php" ]; then
+    echo "❌ settings.workspace.php not provisioned in $SLASH_DIR"
     exit 1
 fi
-if [ ! -f "$HUB_DIR/$SLASH_BRANCH/docroot/sites/development.services.yml" ]; then
-    echo "❌ development.services.yml not provisioned in $SLASH_BRANCH"
+if [ ! -f "$HUB_DIR/$SLASH_DIR/docroot/sites/development.services.yml" ]; then
+    echo "❌ development.services.yml not provisioned in $SLASH_DIR"
     exit 1
 fi
 
 # Test gar db info from inside the worktree root
-cd "$HUB_DIR/$SLASH_BRANCH"
+cd "$HUB_DIR/$SLASH_DIR"
 INFO_OUT=$("$GAR_BIN" db info 2>&1)
 if ! echo "$INFO_OUT" | grep -q "Current Worktree:   $SLASH_BRANCH"; then
     echo "❌ gar db info failed to detect current worktree for slashed branch. Got:"
@@ -510,7 +516,7 @@ if ! echo "$INFO_OUT" | grep -q "Target Database:    db_bsph_dwc_27_test_feature
 fi
 
 # Test gar db info from inside worktree subfolder (docroot/sites/default)
-cd "$HUB_DIR/$SLASH_BRANCH/docroot/sites/default"
+cd "$HUB_DIR/$SLASH_DIR/docroot/sites/default"
 INFO_SUB=$("$GAR_BIN" db info 2>&1)
 if ! echo "$INFO_SUB" | grep -q "Target Database:    db_bsph_dwc_27_test_feature"; then
     echo "❌ gar db info from subfolder resolved incorrect database. Got:"
@@ -519,7 +525,7 @@ if ! echo "$INFO_SUB" | grep -q "Target Database:    db_bsph_dwc_27_test_feature
 fi
 
 # Verify Drush wrapper URI generation for feature worktree
-cd "$HUB_DIR/$SLASH_BRANCH"
+cd "$HUB_DIR/$SLASH_DIR"
 DRUSH_WT_OUT=$(DDEV_PRIMARY_URL="https://test-project.ddev.site" DDEV_SCHEME="https" "$HUB_DIR/.ddev/commands/web/drush" status 2>&1)
 if ! echo "$DRUSH_WT_OUT" | grep -q -- "--uri=https://bsph-dwc-27-test-feature.test-project.ddev.site"; then
     echo "❌ Drush wrapper failed to pass isolated URI for feature worktree! Got:"
@@ -538,7 +544,7 @@ fi
 
 cd "$HUB_DIR"
 "$GAR_BIN" remove -f "$SLASH_BRANCH"
-if [ -d "$HUB_DIR/$SLASH_BRANCH" ]; then
+if [ -d "$HUB_DIR/$SLASH_DIR" ]; then
     echo "❌ Slashed branch worktree was not removed"
     exit 1
 fi

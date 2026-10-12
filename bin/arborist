@@ -63,6 +63,9 @@ if [ "$COMMAND" = "__complete" ]; then
                 (
                     cd "$HUB_DIR" 2>/dev/null || exit 0
                     git worktree list --porcelain 2>/dev/null | awk '/^branch refs\/heads\// {sub(/^branch refs\/heads\//, ""); print}'
+                    git worktree list --porcelain 2>/dev/null | awk '/^worktree / {sub(/^worktree /, ""); print}' | while read -r p; do
+                        [ "$p" != "$HUB_DIR" ] && basename "$p"
+                    done
                     git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null
                     git for-each-ref --format='%(refname:short)' refs/remotes/origin 2>/dev/null | sed 's@^origin/@@' | grep -v '^HEAD$'
                 ) | sort -u
@@ -233,6 +236,11 @@ function get_db_name() {
     echo "db_$(echo "$branch" | sed 's/[^a-zA-Z0-9_]/_/g')"
 }
 
+function get_wt_dir_name() {
+    local branch="$1"
+    echo "$branch" | sed -e 's|^/||' -e 's|/$||' | tr '/' '-'
+}
+
 function is_in_comma_list() {
     local item="$1"
     local list=",$2,"
@@ -244,10 +252,11 @@ function is_in_comma_list() {
 
 function is_in_space_list() {
     local item="$1"
-    local list=" $2 "
-    if [[ "$list" == *" $item "* ]]; then
-        return 0
-    fi
+    for el in $2; do
+        if [ "$el" = "$item" ]; then
+            return 0
+        fi
+    done
     return 1
 }
 
@@ -262,7 +271,9 @@ function flush_env_sync() {
 function provision_drupal_worktree() {
     local wt_dir="$1"
     local site_dir="$wt_dir/$WEBROOT/sites/default"
-    local def_site_dir="$HUB_DIR/$DEFAULT_BRANCH/$WEBROOT/sites/default"
+    local def_wt_dir
+    def_wt_dir=$(get_wt_dir_name "$DEFAULT_BRANCH")
+    local def_site_dir="$HUB_DIR/$def_wt_dir/$WEBROOT/sites/default"
     
     [ -d "$site_dir" ] || mkdir -p "$site_dir"
 
@@ -310,7 +321,7 @@ function provision_drupal_worktree() {
 
     # 4. development.services.yml (needed for cache.backend.null and local development overrides)
     local sites_dir="$wt_dir/$WEBROOT/sites"
-    local def_sites_dir="$HUB_DIR/$DEFAULT_BRANCH/$WEBROOT/sites"
+    local def_sites_dir="$HUB_DIR/$def_wt_dir/$WEBROOT/sites"
     if [ ! -f "$sites_dir/development.services.yml" ]; then
         if [ -f "$def_sites_dir/development.services.yml" ]; then
             cp "$def_sites_dir/development.services.yml" "$sites_dir/development.services.yml"
@@ -515,10 +526,13 @@ EOF
     log "Configuring Git hooks and automated remote branch pruning..."
     install_git_hooks "$PWD"
 
+    local def_wt_dir
+    def_wt_dir=$(get_wt_dir_name "$DEFAULT_BRANCH")
+
     log "Provisioning main worktree ($DEFAULT_BRANCH)..."
-    git worktree add "$DEFAULT_BRANCH" "$DEFAULT_BRANCH"
+    git worktree add "$def_wt_dir" "$DEFAULT_BRANCH"
     
-    cd "$DEFAULT_BRANCH"
+    cd "$def_wt_dir"
     git sparse-checkout set --no-cone '/*' $SPARSE_EXCLUDES
     
     if [ "$FRAMEWORK" == "drupal" ]; then
@@ -563,12 +577,12 @@ EOF
         fi
 
         log "Updating DDEV hub docroot..."
-        ddev config --docroot="$DEFAULT_BRANCH/$WEBROOT" || true
+        ddev config --docroot="$def_wt_dir/$WEBROOT" || true
         if [ -f ".ddev/config.yaml" ]; then
             if grep -q "^docroot:" .ddev/config.yaml; then
-                sed "s|^docroot:.*|docroot: $DEFAULT_BRANCH/$WEBROOT|" .ddev/config.yaml > .ddev/config.yaml.tmp && mv .ddev/config.yaml.tmp .ddev/config.yaml
+                sed "s|^docroot:.*|docroot: $def_wt_dir/$WEBROOT|" .ddev/config.yaml > .ddev/config.yaml.tmp && mv .ddev/config.yaml.tmp .ddev/config.yaml
             else
-                echo "docroot: $DEFAULT_BRANCH/$WEBROOT" >> .ddev/config.yaml
+                echo "docroot: $def_wt_dir/$WEBROOT" >> .ddev/config.yaml
             fi
         fi
 
@@ -590,12 +604,14 @@ EOF
             for i in "${ADDR[@]}"; do
                 b=$(echo "$i" | xargs)
                 log "Provisioning extra branch: $b"
-                git worktree add "$b" "$b" || git worktree add "$b" -b "$b"
-                cd "$b"
+                local extra_wt_dir
+                extra_wt_dir=$(get_wt_dir_name "$b")
+                git worktree add "$extra_wt_dir" "$b" || git worktree add "$extra_wt_dir" -b "$b"
+                cd "$extra_wt_dir"
                 git sparse-checkout set --no-cone '/*' $SPARSE_EXCLUDES
                 cd ..
                 if [ "$FRAMEWORK" == "drupal" ]; then
-                    provision_drupal_worktree "$PWD/$b"
+                    provision_drupal_worktree "$PWD/$extra_wt_dir"
                 fi
             done
         fi
@@ -654,9 +670,14 @@ function cmd_switch() {
         fi
     fi
 
+    local target_wt_dir
+    target_wt_dir=$(get_wt_dir_name "$BRANCH")
+
     # 2. Existing worktree directory or branch already checked out: switch into it
     local existing_wt=""
-    if [ -d "$BRANCH" ]; then
+    if [ -d "$target_wt_dir" ]; then
+        existing_wt="$HUB_DIR/$target_wt_dir"
+    elif [ -d "$BRANCH" ]; then
         existing_wt="$HUB_DIR/$BRANCH"
     else
         local cur_parse_wt=""
@@ -664,8 +685,17 @@ function cmd_switch() {
             if [[ "$line" =~ ^worktree[[:space:]]+(.*) ]]; then
                 cur_parse_wt="${BASH_REMATCH[1]}"
             elif [[ "$line" =~ ^branch[[:space:]]+refs/heads/(.*) ]]; then
-                if [ "${BASH_REMATCH[1]}" = "$BRANCH" ]; then
-                    existing_wt="$cur_parse_wt"
+                local parsed_branch="${BASH_REMATCH[1]}"
+                local parsed_dir_name
+                parsed_dir_name=$(get_wt_dir_name "$parsed_branch")
+                if [ "$parsed_branch" = "$BRANCH" ] || [ "$parsed_dir_name" = "$BRANCH" ]; then
+                    local rel_p="${cur_parse_wt##*/}"
+                    if [ -d "$HUB_DIR/$rel_p" ]; then
+                        existing_wt="$HUB_DIR/$rel_p"
+                    else
+                        existing_wt="$cur_parse_wt"
+                    fi
+                    BRANCH="$parsed_branch"
                     break
                 fi
             fi
@@ -693,15 +723,40 @@ function cmd_switch() {
         has_remote_branch=true
     fi
 
+    # If not found directly, check if a branch exists whose sanitized dir name equals $BRANCH
+    if [ $CREATE_FLAG -eq 0 ] && [ "$has_local_branch" = false ] && [ "$has_remote_branch" = false ]; then
+        while IFS= read -r ref_b; do
+            if [ -n "$ref_b" ] && [ "$(get_wt_dir_name "$ref_b")" = "$BRANCH" ]; then
+                BRANCH="$ref_b"
+                has_local_branch=true
+                break
+            fi
+        done < <(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null)
+
+        if [ "$has_local_branch" = false ]; then
+            while IFS= read -r ref_b; do
+                local rem_b="${ref_b#origin/}"
+                if [ -n "$rem_b" ] && [ "$(get_wt_dir_name "$rem_b")" = "$BRANCH" ]; then
+                    BRANCH="$rem_b"
+                    has_remote_branch=true
+                    break
+                fi
+            done < <(git for-each-ref --format='%(refname:short)' refs/remotes/origin 2>/dev/null | grep -v '^origin/HEAD$')
+        fi
+    fi
+
+    local wt_dir_name
+    wt_dir_name=$(get_wt_dir_name "$BRANCH")
+
     if [ $CREATE_FLAG -eq 1 ]; then
         log "Creating new worktree and branch for '$BRANCH'..."
-        git worktree add "$BRANCH" -b "$BRANCH"
+        git worktree add "$wt_dir_name" -b "$BRANCH"
     elif [ "$has_local_branch" = true ]; then
-        log "Checking out existing branch into worktree '$BRANCH'..."
-        git worktree add "$BRANCH" "$BRANCH"
+        log "Checking out existing branch into worktree '$wt_dir_name'..."
+        git worktree add "$wt_dir_name" "$BRANCH"
     elif [ "$has_remote_branch" = true ]; then
         log "Found remote branch 'origin/$BRANCH'. Checking out tracking worktree..."
-        git worktree add "$BRANCH" --track -b "$BRANCH" "origin/$BRANCH"
+        git worktree add "$wt_dir_name" --track -b "$BRANCH" "origin/$BRANCH"
     else
         # Branch not found locally or remotely, and -c was not specified
         if [ "$GAR_AUTO_YES" != "true" ] && [ -t 0 ]; then
@@ -709,26 +764,26 @@ function cmd_switch() {
             create_confirm=${create_confirm:-Y}
             if [[ "$create_confirm" =~ ^[Yy]$ ]]; then
                 log "Creating new worktree and branch for '$BRANCH'..."
-                git worktree add "$BRANCH" -b "$BRANCH"
+                git worktree add "$wt_dir_name" -b "$BRANCH"
             else
                 log "Switch cancelled."
                 exit 0
             fi
         elif [ "$GAR_AUTO_YES" == "true" ]; then
             log "Creating new worktree and branch for '$BRANCH'..."
-            git worktree add "$BRANCH" -b "$BRANCH"
+            git worktree add "$wt_dir_name" -b "$BRANCH"
         else
             error_exit "Branch '$BRANCH' not found. Use 'gar switch -c $BRANCH' to create it."
         fi
     fi
 
     # Apply sparse-checkout and provision environment
-    cd "$BRANCH"
+    cd "$wt_dir_name"
     git sparse-checkout set --no-cone '/*' $SPARSE_EXCLUDES
     cd ..
     
     if [ "$FRAMEWORK" == "drupal" ]; then
-        provision_drupal_worktree "$HUB_DIR/$BRANCH"
+        provision_drupal_worktree "$HUB_DIR/$wt_dir_name"
     fi
 
     flush_env_sync
@@ -742,7 +797,7 @@ function cmd_switch() {
         if [ -n "$GAR_MOCK_DBS" ]; then
             is_in_space_list "$DB_NAME" "$GAR_MOCK_DBS" && db_exists=true
         elif ddev describe >/dev/null 2>&1; then
-            if ddev mysql -N -e "SHOW DATABASES LIKE '$DB_NAME';" 2>/dev/null | grep -q "^$DB_NAME$"; then
+            if ddev mysql -N -e "SHOW DATABASES LIKE '$DB_NAME';" 2>/dev/null | tr -d '| ' | grep -q "^$DB_NAME$"; then
                 db_exists=true
             fi
         fi
@@ -776,22 +831,22 @@ function cmd_switch() {
     # Run post-provision commands on new worktree if configured
     if [ -n "$POST_PROVISION_CMD" ]; then
         flush_env_sync
-        log "Running post-provision commands in '$BRANCH'..."
+        log "Running post-provision commands in '$wt_dir_name'..."
         (
             set -e
-            cd "$HUB_DIR/$BRANCH"
+            cd "$HUB_DIR/$wt_dir_name"
             eval "$POST_PROVISION_CMD"
         ) || {
             log "\033[31mError:\033[0m Post-provision command failed with exit code $?. Aborted remaining commands."
         }
     fi
 
-    echo "$HUB_DIR/$BRANCH" >&3
+    echo "$HUB_DIR/$wt_dir_name" >&3
 }
 
 function cmd_remove() {
     local FORCE=false
-    local BRANCH=""
+    local TARGET=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -815,15 +870,15 @@ EOF
                 error_exit "Unknown option: $1\nUsage: gar remove [-f|--force] <branch>"
                 ;;
             *)
-                if [ -z "$BRANCH" ]; then
-                    BRANCH="$1"
+                if [ -z "$TARGET" ]; then
+                    TARGET="$1"
                 fi
                 shift
                 ;;
         esac
     done
 
-    if [ -z "$BRANCH" ]; then
+    if [ -z "$TARGET" ]; then
         error_exit "Usage: gar remove [-f|--force] <branch>"
     fi
 
@@ -833,11 +888,47 @@ EOF
     source "$HUB_DIR/.arborist" 2>/dev/null || true
     ENV_ENGINE=${ENV_ENGINE:-ddev}
 
-    if [ ! -d "$BRANCH" ]; then
-        error_exit "Worktree '$BRANCH' not found in $HUB_DIR."
+    # Resolve worktree and branch
+    local target_wt_dir
+    target_wt_dir=$(get_wt_dir_name "$TARGET")
+    local wt_to_remove=""
+    local branch_to_remove=""
+    local cur_parse_wt=""
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^worktree[[:space:]]+(.*) ]]; then
+            cur_parse_wt="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ ^branch[[:space:]]+refs/heads/(.*) ]]; then
+            local b="${BASH_REMATCH[1]}"
+            local rel_wt="${cur_parse_wt#$HUB_DIR/}"
+            local sanitized_b
+            sanitized_b=$(get_wt_dir_name "$b")
+
+            if [ "$b" = "$TARGET" ] || [ "$rel_wt" = "$TARGET" ] || [ "$sanitized_b" = "$TARGET" ] || [ "$cur_parse_wt" = "$TARGET" ] || [ "$cur_parse_wt" = "$HUB_DIR/$TARGET" ] || [ "$cur_parse_wt" = "$HUB_DIR/$target_wt_dir" ]; then
+                wt_to_remove="$cur_parse_wt"
+                branch_to_remove="$b"
+                break
+            fi
+        fi
+    done < <(git worktree list --porcelain 2>/dev/null)
+
+    if [ -z "$wt_to_remove" ]; then
+        if [ -d "$target_wt_dir" ]; then
+            wt_to_remove="$HUB_DIR/$target_wt_dir"
+            branch_to_remove="$TARGET"
+        elif [ -d "$TARGET" ]; then
+            wt_to_remove="$HUB_DIR/$TARGET"
+            branch_to_remove="$TARGET"
+        else
+            error_exit "Worktree '$TARGET' not found in $HUB_DIR."
+        fi
+    else
+        local rel_p="${wt_to_remove##*/}"
+        if [ -d "$HUB_DIR/$rel_p" ]; then
+            wt_to_remove="$HUB_DIR/$rel_p"
+        fi
     fi
 
-    DB_NAME=$(get_db_name "$BRANCH")
+    DB_NAME=$(get_db_name "$branch_to_remove")
 
     if [ "$FORCE" = true ] || [ "$GAR_AUTO_YES" == "true" ]; then
         drop_db="y"
@@ -846,13 +937,22 @@ EOF
         fi
     else
         read -p "Drop the isolated database ($DB_NAME) if it exists? [Y/n]: " drop_db </dev/tty || true
+        drop_db=${drop_db:-Y}
     fi
-    drop_db=${drop_db:-Y}
 
-    log "Removing worktree '$BRANCH'..."
-    git worktree remove --force "$BRANCH"
-    git branch -D "$BRANCH" || true
+    local display_name="${wt_to_remove#$HUB_DIR/}"
+    log "Removing worktree '$display_name'..."
+    git worktree remove --force "$wt_to_remove"
+    git branch -D "$branch_to_remove" 2>/dev/null || true
     
+    # Clean up empty parent directories up to hub root (e.g. if old worktrees were nested in bsph/)
+    local parent_dir
+    parent_dir=$(dirname "$wt_to_remove")
+    while [ "$parent_dir" != "$HUB_DIR" ] && [ "$parent_dir" != "/" ]; do
+        rmdir "$parent_dir" 2>/dev/null || break
+        parent_dir=$(dirname "$parent_dir")
+    done
+
     if [[ "$drop_db" =~ ^[Yy]$ ]]; then
         if [ "$ENV_ENGINE" == "ddev" ]; then
             log "Dropping database $DB_NAME..."
@@ -862,7 +962,7 @@ EOF
         fi
     fi
 
-    log "Worktree '$BRANCH' dropped."
+    log "Worktree '$display_name' dropped."
 }
 
 function cmd_list() {
@@ -907,7 +1007,7 @@ EOF
             existing_dbs="$GAR_MOCK_DBS"
         elif ddev describe >/dev/null 2>&1; then
             ddev_running=true
-            existing_dbs=$(ddev mysql -N -e "SHOW DATABASES;" 2>/dev/null | grep -E '^db$|^db_' || true)
+            existing_dbs=$(ddev mysql -N -e "SHOW DATABASES;" 2>/dev/null | tr -d '| ' | grep -E '^db$|^db_' || true)
         fi
     fi
 
@@ -1224,7 +1324,7 @@ EOF
             existing_dbs="$GAR_MOCK_DBS"
         elif ddev describe >/dev/null 2>&1; then
             ddev_running=true
-            existing_dbs=$(ddev mysql -N -e "SHOW DATABASES;" 2>/dev/null | grep -E '^db$|^db_' || true)
+            existing_dbs=$(ddev mysql -N -e "SHOW DATABASES;" 2>/dev/null | tr -d '| ' | grep -E '^db$|^db_' || true)
         fi
     fi
 
@@ -1498,8 +1598,10 @@ function cmd_sync() {
             project_name=$(basename "$PWD")
         fi
 
+        local def_wt_dir
+        def_wt_dir=$(get_wt_dir_name "$DEFAULT_BRANCH")
         ddev config --additional-hostnames="*.$project_name" >/dev/null 2>&1 || true
-        ddev config --docroot="$DEFAULT_BRANCH/$WEBROOT" >/dev/null 2>&1 || true
+        ddev config --docroot="$def_wt_dir/$WEBROOT" >/dev/null 2>&1 || true
     fi
 
     # 4. Sync and heal all active worktrees
