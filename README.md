@@ -122,6 +122,49 @@ gar remove feature-branch
 *Prompts to safely drop `db_feature-branch` if an isolated database exists.*
 
 
+### List Worktrees & Databases (`gar list`)
+
+Inspect all active worktrees, branches, and isolated databases side-by-side in a unified table with status indicators:
+```bash
+gar list
+```
+
+```text
+STATUS       BRANCH               WORKTREE                 DATABASE               DETAILS
+------       ------               --------                 --------               -------
+🟢 Active    feature-hero         ./feature-hero           db_feature_hero        Current directory
+🟡 Protect   develop              ./develop                db                     Tracking branch
+⚪ Valid     feature-nav          ./feature-nav            db_feature_nav         In sync
+🔴 Orphaned  feature-footer       ./feature-footer         db_feature_footer      Remote PR merged ([gone])
+🔴 Orphaned  bug-123              <none>                   db_bug_123             DB exists (no branch/worktree)
+```
+
+* **🟢 Active**: The worktree you are currently in.
+* **🟡 Protect**: Protected baseline branches (`main`, `develop`, etc.).
+* **⚪ Valid**: Local branch and worktree in sync with active remote upstream.
+* **🔴 Orphaned**: Remote branch was deleted (e.g., merged PR) or database was left behind without a branch.
+
+
+### Prune Orphaned Resources (`gar prune`)
+
+Sweep and clean up stale worktrees, deleted branches, and orphaned databases in MariaDB/MySQL:
+```bash
+# Interactive cleanup (prompts before deleting)
+gar prune
+
+# Force cleanup without confirmation prompts
+gar prune -f
+gar prune --force
+
+# Preview what would be removed without deleting anything
+gar prune --dry-run
+```
+
+* **Dirty Worktree Protection:** If an orphaned worktree directory contains uncommitted changes, `gar prune` **will never delete it**. It safely skips dirty worktrees and alerts you in the terminal.
+* **Active Worktree Protection:** If you are currently inside an orphaned worktree, it is skipped so your shell session is never disrupted.
+* **Automatic Git Hooks Integration:** During `gar init`, Arborist automatically installs Git hooks (`post-merge` and `reference-transaction`) and configures `fetch.prune = true`. When you run `git pull`, remote branches merged into the baseline are pruned and clean orphaned resources are automatically swept in the background!
+
+
 ### Synchronize Hub Environment (`gar sync-ddev`)
 
 When changes are merged into your baseline tracking branch that affect the environment configuration, synchronize the Hub's root configuration cleanly:
@@ -157,16 +200,21 @@ gar dbe --file ../backups/my_backup.sql.gz
 ```
 
 #### Project Configuration (`.arborist`)
-Project-specific settings reside in `.arborist` at the root of the Hub (`$HUB_DIR/.arborist`). During `gar init`, you can configure the backup path:
+Project-specific settings reside in `.arborist` at the root of the Hub (`$HUB_DIR/.arborist`):
 ```bash
 ENV_ENGINE=ddev
 WEBROOT=docroot
 FRAMEWORK=drupal
 SPARSE_EXCLUDES="!/.ddev/ !/.lando.yml !/.lando/ !/docker-compose.yml"
 DB_BACKUP_PATH="backups"
+DEFAULT_BRANCH="develop"
+PROTECTED_BRANCHES="develop,main,master"
+PRUNE_TARGETS="both"   # Options: "both" (default), "db", "worktree"
 ```
 * If `DB_BACKUP_PATH` is a directory, `gar db import` automatically selects the most recent dump file (`.sql`, `.sql.gz`, etc.).
 * Paths provided via `--file` are always evaluated relative to where you invoke the command.
+* `PROTECTED_BRANCHES` protects baseline branches from being deleted by `gar prune`.
+* `PRUNE_TARGETS` controls whether `gar prune` sweeps both worktrees and databases, or only one of them.
 
 
 ## Development & Testing

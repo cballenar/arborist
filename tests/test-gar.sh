@@ -37,8 +37,42 @@ cat << 'EOF' > "$TEST_DIR/bin/ddev"
 #!/bin/bash
 echo "[MOCK DDEV] Executed: ddev $*"
 echo "$*" >> "/tmp/gar-test-env/ddev.log"
+
+if [ "$1" = "describe" ]; then
+    echo "OK"
+    exit 0
+fi
+
+MOCK_DB_FILE="/tmp/gar-test-env/mock-dbs.txt"
+if [ "$1" = "mysql" ]; then
+    if [[ "$*" == *"SHOW DATABASES"* ]]; then
+        if [ -f "$MOCK_DB_FILE" ]; then
+            cat "$MOCK_DB_FILE"
+        else
+            echo "db"
+        fi
+        exit 0
+    fi
+    if [[ "$*" == *"CREATE DATABASE"* ]]; then
+        dbname=$(echo "$*" | sed -E 's/.*CREATE DATABASE IF NOT EXISTS [`]?([^` ;]+)[`]?;.*/\1/')
+        if [ -n "$dbname" ]; then
+            echo "$dbname" >> "$MOCK_DB_FILE"
+            sort -u "$MOCK_DB_FILE" -o "$MOCK_DB_FILE" 2>/dev/null || true
+        fi
+        exit 0
+    fi
+    if [[ "$*" == *"DROP DATABASE"* ]]; then
+        dbname=$(echo "$*" | sed -E 's/.*DROP DATABASE (IF EXISTS )?[`]?([^` ;]+)[`]?;.*/\2/')
+        if [ -n "$dbname" ] && [ -f "$MOCK_DB_FILE" ]; then
+            grep -v "^$dbname$" "$MOCK_DB_FILE" > "$MOCK_DB_FILE.tmp" 2>/dev/null || true
+            mv "$MOCK_DB_FILE.tmp" "$MOCK_DB_FILE"
+        fi
+        exit 0
+    fi
+fi
 EOF
 chmod +x "$TEST_DIR/bin/ddev"
+echo "db" > "$TEST_DIR/mock-dbs.txt"
 
 # Setup auto-confirm for interactive prompts
 export GAR_AUTO_YES=true
@@ -81,6 +115,21 @@ fi
 
 if ! grep -q "^docroot: develop/docroot" ".ddev/config.yaml" 2>/dev/null; then
     echo "❌ Hub docroot failed: docroot not updated to develop/docroot in .ddev/config.yaml"
+    exit 1
+fi
+
+if [ ! -x ".git/hooks/post-merge" ] || [ ! -x ".git/hooks/reference-transaction" ]; then
+    echo "❌ Git hooks installation failed: post-merge or reference-transaction hook missing/not executable"
+    exit 1
+fi
+
+if [ "$(git config fetch.prune 2>/dev/null)" != "true" ]; then
+    echo "❌ Git config failed: fetch.prune is not true"
+    exit 1
+fi
+
+if ! grep -q "PROTECTED_BRANCHES=" ".arborist" 2>/dev/null; then
+    echo "❌ Config failed: PROTECTED_BRANCHES not set in .arborist"
     exit 1
 fi
 
@@ -233,6 +282,102 @@ fi
 
 
 echo "✅ DB commands passed!"
+
+# 9. Test: List and Prune commands with Git hooks
+echo ""
+echo "=> Testing: gar list and gar prune"
+cd "$HUB_DIR"
+
+# 9.1 Verify 'gar list' output from hub root
+LIST_OUTPUT=$("$GAR_BIN" list 2>&1)
+if ! echo "$LIST_OUTPUT" | grep -q "develop"; then
+    echo "❌ gar list failed: develop worktree not listed"
+    exit 1
+fi
+if ! echo "$LIST_OUTPUT" | grep -q "🟡 Protect"; then
+    echo "❌ gar list failed: develop not marked protected"
+    exit 1
+fi
+
+# 9.2 Create an orphaned remote branch scenario
+cd "$REMOTE_REPO"
+git branch feature-prune-clean develop
+git branch feature-prune-dirty develop
+cd "$HUB_DIR"
+git -C "$HUB_DIR/develop" fetch origin >/dev/null 2>&1
+
+# Switch into feature-prune-clean worktree and set upstream
+"$GAR_BIN" switch -c feature-prune-clean 3>/dev/null
+git -C "$HUB_DIR/feature-prune-clean" branch --set-upstream-to=origin/feature-prune-clean
+
+# Switch into feature-prune-dirty worktree, set upstream, and leave dirty file
+"$GAR_BIN" switch -c feature-prune-dirty 3>/dev/null
+git -C "$HUB_DIR/feature-prune-dirty" branch --set-upstream-to=origin/feature-prune-dirty
+echo "uncommitted change" > "$HUB_DIR/feature-prune-dirty/dirty.txt"
+
+# Switch back to hub root
+cd "$HUB_DIR"
+
+# Simulate remote branch deletion (merged PRs)
+git -C "$REMOTE_REPO" branch -D feature-prune-clean >/dev/null 2>&1
+git -C "$REMOTE_REPO" branch -D feature-prune-dirty >/dev/null 2>&1
+
+# Fetch with prune to update upstream track to [gone]
+git -C "$HUB_DIR/develop" fetch -p >/dev/null 2>&1 || true
+
+# Add an orphaned database with no branch
+echo "db_stale_ghost" >> "$TEST_DIR/mock-dbs.txt"
+
+# 9.3 Verify 'gar list' detects [gone] branches and orphaned databases
+LIST_OUTPUT=$("$GAR_BIN" list 2>&1)
+if ! echo "$LIST_OUTPUT" | grep -q "🔴 Orphaned.*feature-prune-clean"; then
+    echo "❌ gar list failed: feature-prune-clean not marked orphaned"
+    exit 1
+fi
+if ! echo "$LIST_OUTPUT" | grep -q "🔴 Orphaned.*db_stale_ghost"; then
+    echo "❌ gar list failed: db_stale_ghost not marked orphaned"
+    exit 1
+fi
+
+# 9.4 Test 'gar prune --dry-run'
+DRY_OUTPUT=$("$GAR_BIN" prune --dry-run 2>&1)
+if ! echo "$DRY_OUTPUT" | grep -q "Dry-run mode"; then
+    echo "❌ gar prune --dry-run failed"
+    exit 1
+fi
+if [ ! -d "$HUB_DIR/feature-prune-clean" ]; then
+    echo "❌ gar prune --dry-run deleted clean worktree"
+    exit 1
+fi
+
+# 9.5 Test 'gar prune -f':
+# Must SKIP dirty worktree and report warning
+PRUNE_OUTPUT=$("$GAR_BIN" prune -f 2>&1)
+if ! echo "$PRUNE_OUTPUT" | grep -q "Skipping dirty worktree 'feature-prune-dirty'"; then
+    echo "❌ gar prune failed: did not skip dirty worktree"
+    exit 1
+fi
+if [ ! -d "$HUB_DIR/feature-prune-dirty" ]; then
+    echo "❌ gar prune failed: dirty worktree was deleted!"
+    exit 1
+fi
+
+# Clean worktree MUST have been removed
+if [ -d "$HUB_DIR/feature-prune-clean" ]; then
+    echo "❌ gar prune failed: clean worktree was not removed"
+    exit 1
+fi
+
+# Orphaned DB db_stale_ghost MUST have been dropped
+if grep -q "db_stale_ghost" "$TEST_DIR/mock-dbs.txt" 2>/dev/null; then
+    echo "❌ gar prune failed: db_stale_ghost was not dropped"
+    exit 1
+fi
+
+# 9.6 Test hook execution
+# Run .git/hooks/post-merge directly to verify it executes cleanly
+"$HUB_DIR/.git/hooks/post-merge"
+echo "✅ List and Prune commands passed!"
 
 echo ""
 echo "🎉 All tests passed successfully!"

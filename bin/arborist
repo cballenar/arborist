@@ -16,11 +16,14 @@ Usage:
 
 Commands:
   init <repo_url> <dir>    Initialize a new Hub and provision baseline worktree
+  list                     List all worktrees, branches, and database mappings
+  prune [options]          Prune orphaned worktrees, branches, and databases (-f, --dry-run)
   switch [-c] <branch>     Switch to an existing worktree or create (-c) a new one
   -m [old_branch] <new>    Move/rename a worktree, branch, and database
   remove <branch>          Remove a worktree, branch, and drop isolated database
   db <action> [options]    Database operations (import/export) (aliases: dbi, dbe)
   sync-ddev                Synchronize Hub .ddev config from tracking branch
+  install-hooks            Install Git hooks in the Hub for automatic pruning
   hook                     Output shell integration hook for eval
   -h, --help, help         Show this help message
 
@@ -109,6 +112,70 @@ function get_db_name() {
     echo "db_$(echo "$branch" | sed 's/[^a-zA-Z0-9_]/_/g')"
 }
 
+function is_in_comma_list() {
+    local item="$1"
+    local list=",$2,"
+    if [[ "$list" == *",$item,"* ]]; then
+        return 0
+    fi
+    return 1
+}
+
+function is_in_space_list() {
+    local item="$1"
+    local list=" $2 "
+    if [[ "$list" == *" $item "* ]]; then
+        return 0
+    fi
+    return 1
+}
+
+function install_git_hooks() {
+    local hub_dir="$1"
+    local hooks_dir="$hub_dir/.git/hooks"
+    mkdir -p "$hooks_dir"
+
+    # Configure fetch.prune and remote.origin.fetch so remote branch deletions are automatically detected
+    git -C "$hub_dir" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*" 2>/dev/null || true
+    git -C "$hub_dir" config fetch.prune true 2>/dev/null || true
+
+    # 1. post-merge hook (runs after git pull / git merge in any worktree)
+    cat << 'EOF' > "$hooks_dir/post-merge"
+#!/usr/bin/env bash
+# Git Arborist post-merge hook
+# Automatically cleans up orphaned databases and worktrees if DDEV is running.
+if command -v gar >/dev/null 2>&1; then
+    gar prune --hook >/dev/null 2>&1 || true
+fi
+EOF
+    chmod +x "$hooks_dir/post-merge"
+
+    # 2. reference-transaction hook (Git 2.29+, runs on ref updates and deletions)
+    cat << 'EOF' > "$hooks_dir/reference-transaction"
+#!/usr/bin/env bash
+# Git Arborist reference-transaction hook
+# Automatically cleans up orphaned databases and worktrees when branches are deleted.
+state="$1"
+if [ "$state" = "committed" ]; then
+    while read -r oldrev newrev refname; do
+        if [ "$newrev" = "0000000000000000000000000000000000000000" ] && [[ "$refname" =~ ^refs/heads/ ]]; then
+            if command -v gar >/dev/null 2>&1; then
+                gar prune --hook >/dev/null 2>&1 || true
+                break
+            fi
+        fi
+    done
+fi
+EOF
+    chmod +x "$hooks_dir/reference-transaction"
+}
+
+function cmd_install_hooks() {
+    HUB_DIR=$(check_hub_dir)
+    install_git_hooks "$HUB_DIR"
+    log "Git Arborist hooks installed successfully in $HUB_DIR/.git/hooks"
+}
+
 function cmd_init() {
     REPO_URL=$1
     HUB_DIR_ARG=$2
@@ -123,6 +190,8 @@ function cmd_init() {
 
     # Clone as bare repository into .git
     git clone --bare "$REPO_URL" .git
+    git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+    git fetch origin >/dev/null 2>&1 || true
     
     # Analyze HEAD
     FILES=$(git ls-tree --name-only HEAD)
@@ -208,15 +277,6 @@ function cmd_init() {
     fi
     mkdir -p "$DB_BACKUP_PATH"
 
-    # Write Arborist config
-    cat <<EOF > .arborist
-ENV_ENGINE=$ENV_ENGINE
-WEBROOT=$WEBROOT
-FRAMEWORK=$FRAMEWORK
-SPARSE_EXCLUDES="$SPARSE_EXCLUDES"
-DB_BACKUP_PATH="$DB_BACKUP_PATH"
-EOF
-
     # 4. Permanent Branches
     DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' || true)
     if [ -z "$DEFAULT_BRANCH" ]; then
@@ -230,6 +290,21 @@ EOF
         read -p "What is the main tracking branch? (Detected: '$DEFAULT_BRANCH') [$DEFAULT_BRANCH]: " MAIN_BRANCH </dev/tty || true
         DEFAULT_BRANCH=${MAIN_BRANCH:-$DEFAULT_BRANCH}
     fi
+
+    # Write Arborist config
+    cat <<EOF > .arborist
+ENV_ENGINE=$ENV_ENGINE
+WEBROOT=$WEBROOT
+FRAMEWORK=$FRAMEWORK
+SPARSE_EXCLUDES="$SPARSE_EXCLUDES"
+DB_BACKUP_PATH="$DB_BACKUP_PATH"
+DEFAULT_BRANCH="$DEFAULT_BRANCH"
+PROTECTED_BRANCHES="$DEFAULT_BRANCH,develop,main,master"
+PRUNE_TARGETS="both"
+EOF
+
+    log "Configuring Git hooks and automated remote branch pruning..."
+    install_git_hooks "$PWD"
 
     log "Provisioning main worktree ($DEFAULT_BRANCH)..."
     git worktree add "$DEFAULT_BRANCH" "$DEFAULT_BRANCH"
@@ -417,6 +492,458 @@ function cmd_remove() {
     fi
 
     log "Worktree '$BRANCH' dropped."
+}
+
+function cmd_list() {
+    HUB_DIR=$(check_hub_dir)
+    cd "$HUB_DIR"
+
+    source "$HUB_DIR/.arborist" 2>/dev/null || true
+    ENV_ENGINE=${ENV_ENGINE:-ddev}
+    DEFAULT_BRANCH=${DEFAULT_BRANCH:-develop}
+    PROTECTED_BRANCHES=${PROTECTED_BRANCHES:-"$DEFAULT_BRANCH,develop,main,master,production,staging"}
+
+    local existing_dbs=""
+    local ddev_running=false
+    if [ "$ENV_ENGINE" == "ddev" ]; then
+        if [ -n "$GAR_MOCK_DBS" ]; then
+            ddev_running=true
+            existing_dbs="$GAR_MOCK_DBS"
+        elif ddev describe >/dev/null 2>&1; then
+            ddev_running=true
+            existing_dbs=$(ddev mysql -N -e "SHOW DATABASES;" 2>/dev/null | grep -E '^db$|^db_' || true)
+        fi
+    fi
+
+    log "=== Git Arborist Workspaces & Databases ==="
+    log "Hub: $HUB_DIR"
+    if [ "$ENV_ENGINE" == "ddev" ] && [ "$ddev_running" = false ]; then
+        log "\033[33mNote:\033[0m DDEV is not running. Database status cannot be queried."
+    fi
+    log ""
+    printf "%-12s %-20s %-24s %-22s %s\n" "STATUS" "BRANCH" "WORKTREE" "DATABASE" "DETAILS"
+    printf "%-12s %-20s %-24s %-22s %s\n" "------" "------" "--------" "--------" "-------"
+
+    local PROCESSED_BRANCHES=" "
+    local PROCESSED_DBS=" "
+
+    # 1. Parse worktrees
+    local cur_wt=""
+    local cur_branch=""
+    local -a wt_paths=()
+    local -a wt_branches=()
+
+    local is_bare=false
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ "$line" =~ ^worktree[[:space:]]+(.*) ]]; then
+            cur_wt="${BASH_REMATCH[1]}"
+            cur_branch=""
+            is_bare=false
+        elif [ "$line" = "bare" ]; then
+            is_bare=true
+        elif [[ "$line" =~ ^branch[[:space:]]+refs/heads/(.*) ]]; then
+            cur_branch="${BASH_REMATCH[1]}"
+        elif [ -z "$line" ] && [ -n "$cur_wt" ]; then
+            if [ "$is_bare" = false ] && [ -n "$cur_branch" ]; then
+                wt_paths+=("$cur_wt")
+                wt_branches+=("$cur_branch")
+            fi
+            cur_wt=""
+            cur_branch=""
+            is_bare=false
+        fi
+    done < <(git worktree list --porcelain && echo "")
+    if [ -n "$cur_wt" ] && [ "$is_bare" = false ] && [ -n "$cur_branch" ]; then
+        wt_paths+=("$cur_wt")
+        wt_branches+=("$cur_branch")
+    fi
+
+    local i=0
+    while [ $i -lt ${#wt_paths[@]} ]; do
+        local wt="${wt_paths[$i]}"
+        local branch="${wt_branches[$i]}"
+        local wt_rel="./$(basename "$wt")"
+        PROCESSED_BRANCHES="$PROCESSED_BRANCHES$branch "
+
+        local db_name
+        if [ "$branch" == "$DEFAULT_BRANCH" ]; then
+            db_name="db"
+        else
+            db_name=$(get_db_name "$branch")
+        fi
+        PROCESSED_DBS="$PROCESSED_DBS$db_name "
+
+        local db_display="$db_name"
+        if [ "$ddev_running" = true ]; then
+            if ! is_in_space_list "$db_name" "$existing_dbs"; then
+                db_display="$db_name (missing)"
+            fi
+        fi
+
+        local track=""
+        if [ "$branch" != "detached" ]; then
+            track=$(git for-each-ref --format '%(upstream:track)' "refs/heads/$branch" 2>/dev/null || true)
+        fi
+
+        local status="⚪ Valid"
+        local details="In sync"
+
+        local is_active=false
+        if [ "$INVOCATION_DIR" = "$wt" ] || [[ "$INVOCATION_DIR" == "$wt/"* ]]; then
+            is_active=true
+        fi
+
+        if [ "$is_active" = true ]; then
+            status="🟢 Active"
+            details="Current directory"
+        elif is_in_comma_list "$branch" "$PROTECTED_BRANCHES"; then
+            status="🟡 Protect"
+            if [ "$branch" = "$DEFAULT_BRANCH" ]; then
+                details="Tracking branch"
+            else
+                details="Protected branch"
+            fi
+        elif [ "$track" = "[gone]" ]; then
+            status="🔴 Orphaned"
+            details="Remote PR merged ([gone])"
+        fi
+
+        printf "%-12s %-20s %-24s %-22s %s\n" "$status" "$branch" "$wt_rel" "$db_display" "$details"
+        i=$((i + 1))
+    done
+
+    # 2. Branches without worktrees
+    while IFS='|' read -r bname btrack; do
+        if [ -n "$bname" ] && ! is_in_space_list "$bname" "$PROCESSED_BRANCHES"; then
+            PROCESSED_BRANCHES="$PROCESSED_BRANCHES$bname "
+            local db_name
+            if [ "$bname" == "$DEFAULT_BRANCH" ]; then
+                db_name="db"
+            else
+                db_name=$(get_db_name "$bname")
+            fi
+            PROCESSED_DBS="$PROCESSED_DBS$db_name "
+
+            local db_display="$db_name"
+            if [ "$ddev_running" = true ]; then
+                if ! is_in_space_list "$db_name" "$existing_dbs"; then
+                    db_display="<none>"
+                fi
+            fi
+
+            local status="⚪ Valid"
+            local details="Branch only (no worktree)"
+
+            if is_in_comma_list "$bname" "$PROTECTED_BRANCHES"; then
+                status="🟡 Protect"
+                details="Protected (no worktree)"
+            elif [ "$btrack" = "[gone]" ]; then
+                status="🔴 Orphaned"
+                details="Remote [gone] (no worktree)"
+            fi
+
+            printf "%-12s %-20s %-24s %-22s %s\n" "$status" "$bname" "<none>" "$db_display" "$details"
+        fi
+    done < <(git for-each-ref --format '%(refname:short)|%(upstream:track)' refs/heads)
+
+    # 3. Databases in MySQL without branch or worktree
+    if [ "$ddev_running" = true ]; then
+        for db in $existing_dbs; do
+            if ! is_in_space_list "$db" "$PROCESSED_DBS"; then
+                if [ "$db" == "db" ]; then
+                    printf "%-12s %-20s %-24s %-22s %s\n" "🟡 Protect" "<none>" "<none>" "db" "Default database"
+                else
+                    printf "%-12s %-20s %-24s %-22s %s\n" "🔴 Orphaned" "<none>" "<none>" "$db" "DB exists (no branch/worktree)"
+                fi
+            fi
+        done
+    fi
+}
+
+function cmd_prune() {
+    local FORCE=false
+    local DRY_RUN=false
+    local IS_HOOK=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -f|--force)
+                FORCE=true
+                shift
+                ;;
+            --dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            --hook)
+                IS_HOOK=true
+                FORCE=true
+                shift
+                ;;
+            -h|--help)
+                cat << 'EOF'
+Usage: gar prune [options]
+
+Prune orphaned worktrees, branches, and isolated databases.
+
+Options:
+  -f, --force     Skip confirmation prompt and prune clean resources
+  --dry-run       Show what would be pruned without deleting anything
+  --hook          Non-interactive mode for Git hooks (exits if engine offline)
+  -h, --help      Show this help message
+EOF
+                exit 0
+                ;;
+            *)
+                error_exit "Unknown option: $1\nUsage: gar prune [-f|--force] [--dry-run]"
+                ;;
+        esac
+    done
+
+    HUB_DIR=$(check_hub_dir)
+    cd "$HUB_DIR"
+
+    source "$HUB_DIR/.arborist" 2>/dev/null || true
+    ENV_ENGINE=${ENV_ENGINE:-ddev}
+    DEFAULT_BRANCH=${DEFAULT_BRANCH:-develop}
+    PROTECTED_BRANCHES=${PROTECTED_BRANCHES:-"$DEFAULT_BRANCH,develop,main,master,production,staging"}
+    PRUNE_TARGETS=${PRUNE_TARGETS:-both}
+
+    # Ensure hooks are installed in this hub
+    if [ ! -f "$HUB_DIR/.git/hooks/post-merge" ]; then
+        install_git_hooks "$HUB_DIR" >/dev/null 2>&1 || true
+    fi
+
+    # Check if DDEV is running
+    local ddev_running=false
+    local existing_dbs=""
+    if [ "$ENV_ENGINE" == "ddev" ]; then
+        if [ -n "$GAR_MOCK_DBS" ]; then
+            ddev_running=true
+            existing_dbs="$GAR_MOCK_DBS"
+        elif ddev describe >/dev/null 2>&1; then
+            ddev_running=true
+            existing_dbs=$(ddev mysql -N -e "SHOW DATABASES;" 2>/dev/null | grep -E '^db$|^db_' || true)
+        fi
+    fi
+
+    # In hook mode, if DDEV is offline, exit immediately
+    if [ "$IS_HOOK" = true ] && [ "$ENV_ENGINE" == "ddev" ] && [ "$ddev_running" = false ]; then
+        exit 0
+    fi
+
+    local -a prune_wts=()
+    local -a prune_branches=()
+    local -a prune_dbs=()
+    local -a dirty_wts=()
+    local -a active_wts=()
+
+    # 1. Parse all worktrees
+    local cur_wt=""
+    local cur_branch=""
+    local -a wt_paths=()
+    local -a wt_branches=()
+
+    local is_bare=false
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ "$line" =~ ^worktree[[:space:]]+(.*) ]]; then
+            cur_wt="${BASH_REMATCH[1]}"
+            cur_branch=""
+            is_bare=false
+        elif [ "$line" = "bare" ]; then
+            is_bare=true
+        elif [[ "$line" =~ ^branch[[:space:]]+refs/heads/(.*) ]]; then
+            cur_branch="${BASH_REMATCH[1]}"
+        elif [ -z "$line" ] && [ -n "$cur_wt" ]; then
+            if [ "$is_bare" = false ] && [ -n "$cur_branch" ]; then
+                wt_paths+=("$cur_wt")
+                wt_branches+=("$cur_branch")
+            fi
+            cur_wt=""
+            cur_branch=""
+            is_bare=false
+        fi
+    done < <(git worktree list --porcelain && echo "")
+    if [ -n "$cur_wt" ] && [ "$is_bare" = false ] && [ -n "$cur_branch" ]; then
+        wt_paths+=("$cur_wt")
+        wt_branches+=("$cur_branch")
+    fi
+
+    # Map of all branches
+    local -a all_heads=()
+    local -a all_tracks=()
+    while IFS='|' read -r bname btrack; do
+        if [ -n "$bname" ]; then
+            all_heads+=("$bname")
+            all_tracks+=("$btrack")
+        fi
+    done < <(git for-each-ref --format '%(refname:short)|%(upstream:track)' refs/heads)
+
+    # 2. Check for branches whose upstream is [gone]
+    local i=0
+    while [ $i -lt ${#all_heads[@]} ]; do
+        local b="${all_heads[$i]}"
+        local tr="${all_tracks[$i]}"
+
+        if [ "$tr" = "[gone]" ] && ! is_in_comma_list "$b" "$PROTECTED_BRANCHES"; then
+            # Find worktree path for this branch
+            local found_wt=""
+            local j=0
+            while [ $j -lt ${#wt_branches[@]} ]; do
+                if [ "${wt_branches[$j]}" = "$b" ]; then
+                    found_wt="${wt_paths[$j]}"
+                    break
+                fi
+                j=$((j + 1))
+            done
+
+            local skip_branch=false
+            if [ -n "$found_wt" ] && [ -d "$found_wt" ]; then
+                # Check if active
+                if [ "$INVOCATION_DIR" = "$found_wt" ] || [[ "$INVOCATION_DIR" == "$found_wt/"* ]]; then
+                    active_wts+=("$b:$found_wt")
+                    skip_branch=true
+                # Check if dirty
+                elif [ -n "$(git -C "$found_wt" status --porcelain 2>/dev/null)" ]; then
+                    dirty_wts+=("$b:$found_wt")
+                    skip_branch=true
+                else
+                    prune_wts+=("$found_wt")
+                fi
+            fi
+
+            if [ "$skip_branch" = false ]; then
+                prune_branches+=("$b")
+                local db_name=$(get_db_name "$b")
+                if [ "$ddev_running" = true ] && is_in_space_list "$db_name" "$existing_dbs"; then
+                    prune_dbs+=("$db_name")
+                fi
+            fi
+        fi
+        i=$((i + 1))
+    done
+
+    # 3. Check for orphaned databases in MySQL (databases with no active git branch)
+    if [ "$ddev_running" = true ]; then
+        for db in $existing_dbs; do
+            if [ "$db" == "db" ]; then
+                continue
+            fi
+            # Check if this db is in prune_dbs
+            local already_queued=false
+            for qd in "${prune_dbs[@]}"; do
+                if [ "$qd" == "$db" ]; then
+                    already_queued=true
+                    break
+                fi
+            done
+            if [ "$already_queued" = true ]; then
+                continue
+            fi
+
+            # Check if db belongs to ANY active branch
+            local has_branch=false
+            for b in "${all_heads[@]}"; do
+                if [ "$(get_db_name "$b")" == "$db" ]; then
+                    has_branch=true
+                    break
+                fi
+            done
+
+            if [ "$has_branch" = false ]; then
+                # Check if protected
+                local is_prot=false
+                for pb in $(echo "$PROTECTED_BRANCHES" | tr ',' ' '); do
+                    if [ "$(get_db_name "$pb")" == "$db" ]; then
+                        is_prot=true
+                        break
+                    fi
+                done
+                if [ "$is_prot" = false ]; then
+                    prune_dbs+=("$db")
+                fi
+            fi
+        done
+    fi
+
+    # Report dirty or active worktrees skipped
+    for dw in "${dirty_wts[@]}"; do
+        local b_name="${dw%%:*}"
+        log "\033[33m⚠️  Skipping dirty worktree '$b_name' (has uncommitted changes). Clean or commit before pruning.\033[0m"
+    done
+    for aw in "${active_wts[@]}"; do
+        local b_name="${aw%%:*}"
+        log "\033[33m⚠️  Skipping active worktree '$b_name' (currently in use).\033[0m"
+    done
+
+    local total_targets=$((${#prune_wts[@]} + ${#prune_branches[@]} + ${#prune_dbs[@]}))
+    if [ $total_targets -eq 0 ]; then
+        if [ "$IS_HOOK" = false ]; then
+            log "No orphaned worktrees or databases found. Everything is in sync."
+        fi
+        exit 0
+    fi
+
+    log "The following orphaned resources were found:"
+    for wt in "${prune_wts[@]}"; do
+        log "  • Worktree: ./$(basename "$wt")"
+    done
+    for b in "${prune_branches[@]}"; do
+        log "  • Branch:   $b (remote [gone])"
+    done
+    for db in "${prune_dbs[@]}"; do
+        log "  • Database: $db"
+    done
+    log ""
+
+    if [ "$DRY_RUN" = true ]; then
+        log "Dry-run mode: No resources were removed."
+        exit 0
+    fi
+
+    if [ "$FORCE" = false ]; then
+        if [ "$GAR_AUTO_YES" == "true" ]; then
+            confirm="y"
+        else
+            read -p "Prune these orphaned resources? [y/N]: " confirm </dev/tty || true
+        fi
+        confirm=${confirm:-N}
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            log "Pruning cancelled."
+            exit 0
+        fi
+    fi
+
+    # Perform pruning according to PRUNE_TARGETS
+    local count_wts=0
+    local count_branches=0
+    local count_dbs=0
+
+    if [ "$PRUNE_TARGETS" = "both" ] || [ "$PRUNE_TARGETS" = "worktree" ]; then
+        for wt in "${prune_wts[@]}"; do
+            log "Removing worktree $(basename "$wt")..."
+            git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+            count_wts=$((count_wts + 1))
+        done
+        for b in "${prune_branches[@]}"; do
+            log "Deleting branch $b..."
+            git branch -D "$b" 2>/dev/null || true
+            count_branches=$((count_branches + 1))
+        done
+        git worktree prune 2>/dev/null || true
+    fi
+
+    if [ "$PRUNE_TARGETS" = "both" ] || [ "$PRUNE_TARGETS" = "db" ]; then
+        if [ "$ENV_ENGINE" == "ddev" ] && [ "$ddev_running" = true ]; then
+            for db in "${prune_dbs[@]}"; do
+                log "Dropping database $db..."
+                ddev mysql -e "DROP DATABASE IF EXISTS \`$db\`;" 2>/dev/null || true
+                count_dbs=$((count_dbs + 1))
+            done
+        fi
+    fi
+
+    log "✅ Pruning complete: removed $count_wts worktree(s), deleted $count_branches branch(es), dropped $count_dbs database(s)."
 }
 
 function cmd_sync_ddev() {
@@ -760,6 +1287,15 @@ EOF
 case "$COMMAND" in
     init)
         cmd_init "$@"
+        ;;
+    list)
+        cmd_list "$@"
+        ;;
+    prune)
+        cmd_prune "$@"
+        ;;
+    install-hooks)
+        cmd_install_hooks "$@"
         ;;
     switch)
         cmd_switch "$@"
