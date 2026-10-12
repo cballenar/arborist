@@ -228,11 +228,13 @@ DB_BACKUP_PATH="backups"
 DEFAULT_BRANCH="develop"
 PROTECTED_BRANCHES="develop,main,master"
 PRUNE_TARGETS="both"   # Options: "both" (default), "db", "worktree"
+POST_PROVISION_CMD="ddev drush updb -y && ddev drush cim -y && ddev drush cr && ddev drush uli"
 ```
 * If `DB_BACKUP_PATH` is a directory, `gar db import` automatically selects the most recent dump file (`.sql`, `.sql.gz`, etc.).
 * Paths provided via `--file` are always evaluated relative to where you invoke the command.
 * `PROTECTED_BRANCHES` protects baseline branches from being deleted by `gar prune`.
 * `PRUNE_TARGETS` controls whether `gar prune` sweeps both worktrees and databases, or only one of them.
+* `POST_PROVISION_CMD` specifies commands executed inside the worktree directory when a new branch is created or checked out from remote (e.g. `updb` → `cim` → `cr` → `uli`). If any command fails, remaining commands abort immediately so the developer can inspect and resolve the issue.
 
 
 ## Development & Testing

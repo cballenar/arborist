@@ -156,6 +156,11 @@ if ! grep -q "CREATE DATABASE IF NOT EXISTS \`db_feature_1\`" "$TEST_DIR/ddev.lo
     exit 1
 fi
 
+if ! grep -q "drush updb -y" "$TEST_DIR/ddev.log" || ! grep -q "drush uli" "$TEST_DIR/ddev.log"; then
+    echo "❌ Post-provision commands failed: drush updb/uli not executed"
+    exit 1
+fi
+
 echo "✅ Switch passed!"
 
 # 5. Test: Move (-m)
@@ -423,6 +428,32 @@ if ! echo "$HOOK_OUTPUT" | grep -q "_gar_zsh_complete" || ! echo "$HOOK_OUTPUT" 
 fi
 
 echo "✅ Switch Ergonomics, Remove -f, and Autocompletion passed!"
+
+# 11. Test: Post-Provision Command Error Termination
+echo ""
+echo "=> Testing: Post-Provision Command Error Termination"
+cd "$HUB_DIR"
+
+FAIL_LOG="$TEST_DIR/post-prov-fail.log"
+echo "POST_PROVISION_CMD=\"touch '$FAIL_LOG' && false && touch '$TEST_DIR/never-reached.log'\"" >> "$HUB_DIR/.arborist"
+
+FAIL_TARGET=$("$GAR_BIN" switch -c feature-fail-test)
+if [ "$FAIL_TARGET" != "$HUB_DIR/feature-fail-test" ] || [ ! -d "$HUB_DIR/feature-fail-test" ]; then
+    echo "❌ Post-provision error test failed: worktree was not switched to"
+    exit 1
+fi
+
+if [ ! -f "$FAIL_LOG" ]; then
+    echo "❌ Post-provision error test failed: initial command did not run"
+    exit 1
+fi
+
+if [ -f "$TEST_DIR/never-reached.log" ]; then
+    echo "❌ Post-provision error test failed: subsequent commands were not terminated after failure"
+    exit 1
+fi
+
+echo "✅ Post-Provision Command Error Termination passed!"
 
 echo ""
 echo "🎉 All tests passed successfully!"

@@ -399,10 +399,9 @@ function cmd_init() {
 
     # 4. Permanent Branches
     DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' || true)
-    if [ -z "$DEFAULT_BRANCH" ]; then
-        DEFAULT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "develop")
-    fi
-    if [ "$DEFAULT_BRANCH" == "HEAD" ] || [ -z "$DEFAULT_BRANCH" ]; then
+    DEFAULT_BRANCH=${DEFAULT_BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)}
+    DEFAULT_BRANCH=${DEFAULT_BRANCH:-develop}
+    if [ "$DEFAULT_BRANCH" == "HEAD" ]; then
         DEFAULT_BRANCH="develop"
     fi
 
@@ -410,6 +409,25 @@ function cmd_init() {
         read -p "What is the main tracking branch? (Detected: '$DEFAULT_BRANCH') [$DEFAULT_BRANCH]: " MAIN_BRANCH </dev/tty || true
         DEFAULT_BRANCH=${MAIN_BRANCH:-$DEFAULT_BRANCH}
     fi
+
+    # 5. Post-provision Commands
+    POST_PROVISION_CMD=""
+    if [ "$FRAMEWORK" == "drupal" ]; then
+        SUGGESTED_POST_PROVISION="ddev drush updb -y && ddev drush cim -y && ddev drush cr && ddev drush uli"
+        if [ "$GAR_AUTO_YES" == "true" ]; then
+            POST_PROVISION_CMD="$SUGGESTED_POST_PROVISION"
+        else
+            read -p "Post-provision command for new branches? [$SUGGESTED_POST_PROVISION]: " input_post_prov </dev/tty || true
+            POST_PROVISION_CMD=${input_post_prov:-$SUGGESTED_POST_PROVISION}
+        fi
+    else
+        if [ "$GAR_AUTO_YES" != "true" ]; then
+            read -p "Post-provision command for new branches? (e.g., composer install) [none]: " input_post_prov </dev/tty || true
+            POST_PROVISION_CMD=${input_post_prov:-}
+        fi
+    fi
+
+    safe_post_prov=$(echo "$POST_PROVISION_CMD" | sed 's/\\/\\\\/g; s/"/\\"/g')
 
     # Write Arborist config
     cat <<EOF > .arborist
@@ -421,6 +439,7 @@ DB_BACKUP_PATH="$DB_BACKUP_PATH"
 DEFAULT_BRANCH="$DEFAULT_BRANCH"
 PROTECTED_BRANCHES="$DEFAULT_BRANCH,develop,main,master"
 PRUNE_TARGETS="both"
+POST_PROVISION_CMD="$safe_post_prov"
 EOF
 
     log "Configuring Git hooks and automated remote branch pruning..."
@@ -624,6 +643,18 @@ function cmd_switch() {
         fi
     else
         log "Using default shared database."
+    fi
+
+    # Run post-provision commands on new worktree if configured
+    if [ -n "$POST_PROVISION_CMD" ]; then
+        log "Running post-provision commands in '$BRANCH'..."
+        (
+            set -e
+            cd "$HUB_DIR/$BRANCH"
+            eval "$POST_PROVISION_CMD"
+        ) || {
+            log "\033[31mError:\033[0m Post-provision command failed with exit code $?. Aborted remaining commands."
+        }
     fi
 
     echo "$HUB_DIR/$BRANCH" >&3
@@ -1170,12 +1201,13 @@ function cmd_sync_ddev() {
     fi
     
     log "Syncing .ddev configuration from the tracking branch..."
-    # Extract cleanly from tracking branch (usually develop or main)
-    DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' || true)
+    # Extract cleanly from tracking branch (preserve .arborist configuration if set)
     if [ -z "$DEFAULT_BRANCH" ]; then
-        DEFAULT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "develop")
+        DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' || true)
+        DEFAULT_BRANCH=${DEFAULT_BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)}
+        DEFAULT_BRANCH=${DEFAULT_BRANCH:-develop}
     fi
-    if [ "$DEFAULT_BRANCH" == "HEAD" ] || [ -z "$DEFAULT_BRANCH" ]; then
+    if [ "$DEFAULT_BRANCH" == "HEAD" ]; then
         DEFAULT_BRANCH="develop"
     fi
     
@@ -1357,11 +1389,12 @@ EOF
     DB_BACKUP_PATH=${DB_BACKUP_PATH:-backups}
 
     # Tracking / default branch detection
-    DEFAULT_BRANCH=$(git -C "$HUB_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' || true)
     if [ -z "$DEFAULT_BRANCH" ]; then
-        DEFAULT_BRANCH=$(git -C "$HUB_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "develop")
+        DEFAULT_BRANCH=$(git -C "$HUB_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' || true)
+        DEFAULT_BRANCH=${DEFAULT_BRANCH:-$(git -C "$HUB_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)}
+        DEFAULT_BRANCH=${DEFAULT_BRANCH:-develop}
     fi
-    if [ "$DEFAULT_BRANCH" == "HEAD" ] || [ -z "$DEFAULT_BRANCH" ]; then
+    if [ "$DEFAULT_BRANCH" == "HEAD" ]; then
         DEFAULT_BRANCH="develop"
     fi
 
