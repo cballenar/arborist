@@ -248,6 +248,16 @@ EOF
                 echo "additional_hostnames: [\"*.$PROJECT_NAME\"]" >> .ddev/config.yaml
             fi
         fi
+
+        log "Updating DDEV hub docroot..."
+        ddev config --docroot="$DEFAULT_BRANCH/$WEBROOT" || true
+        if [ -f ".ddev/config.yaml" ]; then
+            if grep -q "^docroot:" .ddev/config.yaml; then
+                sed "s|^docroot:.*|docroot: $DEFAULT_BRANCH/$WEBROOT|" .ddev/config.yaml > .ddev/config.yaml.tmp && mv .ddev/config.yaml.tmp .ddev/config.yaml
+            else
+                echo "docroot: $DEFAULT_BRANCH/$WEBROOT" >> .ddev/config.yaml
+            fi
+        fi
     fi
 
     if [ "$GAR_AUTO_YES" != "true" ]; then

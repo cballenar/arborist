@@ -20,7 +20,11 @@ mkdir -p "$REMOTE_REPO"
 cd "$REMOTE_REPO"
 git init --initial-branch=develop >/dev/null
 mkdir .ddev docroot docroot/sites docroot/sites/default
-echo "config" > .ddev/config.yaml
+cat << 'EOF' > .ddev/config.yaml
+name: test-project
+type: drupal10
+docroot: docroot
+EOF
 echo "<?php // Settings file" > docroot/sites/default/settings.php
 git add .
 git commit -m "Initial commit" >/dev/null
@@ -70,8 +74,13 @@ if [ ! -f "develop/docroot/sites/default/settings.workspace.php" ] || ! grep -q 
     exit 1
 fi
 
-if ! grep -q "\*\.hub" ".ddev/config.yaml" 2>/dev/null; then
-    echo "❌ Wildcard routing failed: additional_hostnames not found in .ddev/config.yaml"
+if ! grep -q "\*\.test-project" ".ddev/config.yaml" 2>/dev/null; then
+    echo "❌ Wildcard routing failed: additional_hostnames (*.test-project) not found in .ddev/config.yaml"
+    exit 1
+fi
+
+if ! grep -q "^docroot: develop/docroot" ".ddev/config.yaml" 2>/dev/null; then
+    echo "❌ Hub docroot failed: docroot not updated to develop/docroot in .ddev/config.yaml"
     exit 1
 fi
 
@@ -149,7 +158,11 @@ mkdir -p "$REMOTE_MAIN_REPO"
 cd "$REMOTE_MAIN_REPO"
 git init --initial-branch=main >/dev/null
 mkdir .ddev docroot docroot/sites docroot/sites/default
-echo "config" > .ddev/config.yaml
+cat << 'EOF' > .ddev/config.yaml
+name: test-main-project
+type: drupal10
+docroot: docroot
+EOF
 echo "<?php // Settings file" > docroot/sites/default/settings.php
 git add .
 git commit -m "Initial commit" >/dev/null
@@ -164,6 +177,14 @@ if ! grep -q "\$workspace_branch = 'main';" "main/docroot/sites/default/settings
 fi
 if grep -q "'develop'" "main/docroot/sites/default/settings.workspace.php"; then
     echo "❌ Dynamic tracking branch failed: develop was not replaced in settings.workspace.php"
+    exit 1
+fi
+if ! grep -q "^docroot: main/docroot" ".ddev/config.yaml" 2>/dev/null; then
+    echo "❌ Hub docroot failed: docroot not updated to main/docroot in .ddev/config.yaml"
+    exit 1
+fi
+if ! grep -q "\*\.test-main-project" ".ddev/config.yaml" 2>/dev/null; then
+    echo "❌ Wildcard routing failed: additional_hostnames (*.test-main-project) not found in .ddev/config.yaml"
     exit 1
 fi
 echo "✅ Dynamic tracking branch test passed!"
