@@ -93,6 +93,11 @@ function check_hub_dir() {
     echo "$HUB_DIR"
 }
 
+function get_db_name() {
+    local branch="$1"
+    echo "db_$(echo "$branch" | sed 's/[^a-zA-Z0-9_]/_/g')"
+}
+
 function cmd_init() {
     REPO_URL=$1
     HUB_DIR_ARG=$2
@@ -310,11 +315,12 @@ function cmd_switch() {
         create_db=${create_db:-N}
         
         if [[ "$create_db" =~ ^[Yy]$ ]]; then
+            DB_NAME=$(get_db_name "$BRANCH")
             if [ "$ENV_ENGINE" == "ddev" ]; then
-                log "Cloning default database into db_$BRANCH..."
-                ddev mysql -e "CREATE DATABASE IF NOT EXISTS \`db_$BRANCH\`;" || true
-                ddev export-db --database=db | ddev import-db --database=db_$BRANCH
-                log "Isolated database db_$BRANCH ready."
+                log "Cloning default database into $DB_NAME..."
+                ddev mysql -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`;" || true
+                ddev export-db --database=db | ddev import-db --database=$DB_NAME
+                log "Isolated database $DB_NAME ready."
             else
                 log "Automated database cloning for $ENV_ENGINE is not yet implemented."
             fi
@@ -351,11 +357,13 @@ function cmd_remove() {
         error_exit "Worktree '$BRANCH' not found in $HUB_DIR."
     fi
 
+    DB_NAME=$(get_db_name "$BRANCH")
+
     if [ "$GAR_AUTO_YES" == "true" ]; then
         drop_db="y"
         log "Auto-confirming database drop for tests."
     else
-        read -p "Drop the isolated database (db_$BRANCH) if it exists? [Y/n]: " drop_db </dev/tty || true
+        read -p "Drop the isolated database ($DB_NAME) if it exists? [Y/n]: " drop_db </dev/tty || true
     fi
     drop_db=${drop_db:-Y}
 
@@ -365,8 +373,8 @@ function cmd_remove() {
     
     if [[ "$drop_db" =~ ^[Yy]$ ]]; then
         if [ "$ENV_ENGINE" == "ddev" ]; then
-            log "Dropping database db_$BRANCH..."
-            ddev mysql -e "DROP DATABASE IF EXISTS \`db_$BRANCH\`;" || true
+            log "Dropping database $DB_NAME..."
+            ddev mysql -e "DROP DATABASE IF EXISTS \`$DB_NAME\`;" || true
         else
             log "Automated database dropping for $ENV_ENGINE is not yet implemented."
         fi
@@ -458,19 +466,22 @@ function cmd_m() {
     # Move/mirror git branch
     git branch -m "$OLD_BRANCH" "$NEW_BRANCH"
     
+    OLD_DB_NAME=$(get_db_name "$OLD_BRANCH")
+    NEW_DB_NAME=$(get_db_name "$NEW_BRANCH")
+
     if [ "$GAR_AUTO_YES" == "true" ]; then
         move_db="y"
     else
-        read -p "Did this branch have an isolated database (db_$OLD_BRANCH) that needs to be moved? [y/N]: " move_db </dev/tty || true
+        read -p "Did this branch have an isolated database ($OLD_DB_NAME) that needs to be moved? [y/N]: " move_db </dev/tty || true
     fi
     move_db=${move_db:-N}
 
     if [[ "$move_db" =~ ^[Yy]$ ]]; then
         if [ "$ENV_ENGINE" == "ddev" ]; then
-            log "Migrating database from db_$OLD_BRANCH to db_$NEW_BRANCH..."
-            ddev mysql -e "CREATE DATABASE IF NOT EXISTS \`db_$NEW_BRANCH\`;" || true
-            ddev export-db --database="db_$OLD_BRANCH" | ddev import-db --database="db_$NEW_BRANCH"
-            ddev mysql -e "DROP DATABASE \`db_$OLD_BRANCH\`;" || true
+            log "Migrating database from $OLD_DB_NAME to $NEW_DB_NAME..."
+            ddev mysql -e "CREATE DATABASE IF NOT EXISTS \`$NEW_DB_NAME\`;" || true
+            ddev export-db --database="$OLD_DB_NAME" | ddev import-db --database="$NEW_DB_NAME"
+            ddev mysql -e "DROP DATABASE \`$OLD_DB_NAME\`;" || true
             log "Database migrated successfully."
         else
             log "Automated database moving for $ENV_ENGINE is not yet implemented."

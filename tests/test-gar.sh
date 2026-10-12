@@ -32,6 +32,7 @@ mkdir -p "$TEST_DIR/bin"
 cat << 'EOF' > "$TEST_DIR/bin/ddev"
 #!/bin/bash
 echo "[MOCK DDEV] Executed: ddev $*"
+echo "$*" >> "/tmp/gar-test-env/ddev.log"
 EOF
 chmod +x "$TEST_DIR/bin/ddev"
 
@@ -87,6 +88,11 @@ if [ -d "feature-1/.ddev" ]; then
     exit 1
 fi
 
+if ! grep -q "CREATE DATABASE IF NOT EXISTS \`db_feature_1\`" "$TEST_DIR/ddev.log"; then
+    echo "❌ Database naming failed: sanitized db_feature_1 not found in ddev commands"
+    exit 1
+fi
+
 echo "✅ Switch passed!"
 
 # 5. Test: Move (-m)
@@ -105,6 +111,11 @@ if ! git worktree list | grep -q "feature-2"; then
     exit 1
 fi
 
+if ! grep -q "CREATE DATABASE IF NOT EXISTS \`db_feature_2\`" "$TEST_DIR/ddev.log" || ! grep -q "DROP DATABASE \`db_feature_1\`" "$TEST_DIR/ddev.log"; then
+    echo "❌ Database migration failed: sanitized db_feature_2 or drop of db_feature_1 not found"
+    exit 1
+fi
+
 echo "✅ Move passed!"
 
 # 6. Test: Remove
@@ -114,6 +125,11 @@ echo "=> Testing: gar remove feature-2"
 
 if [ -d "feature-2" ]; then
     echo "❌ Remove failed: Directory still exists"
+    exit 1
+fi
+
+if ! grep -q "DROP DATABASE IF EXISTS \`db_feature_2\`" "$TEST_DIR/ddev.log"; then
+    echo "❌ Database drop failed: sanitized db_feature_2 not found in ddev commands"
     exit 1
 fi
 
