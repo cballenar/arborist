@@ -189,5 +189,50 @@ if ! grep -q "\*\.test-main-project" ".ddev/config.yaml" 2>/dev/null; then
 fi
 echo "✅ Dynamic tracking branch test passed!"
 
+# 8. Test: Database commands (import, export, aliases, relative paths, latest file resolution)
+echo ""
+echo "=> Testing: gar db import/export"
+cd "$HUB_DIR"
+
+# 8.1 Create backup directory and dump files with different timestamps
+mkdir -p "$HUB_DIR/backups"
+touch -t 202610121000 "$HUB_DIR/backups/dump_old.sql.gz"
+touch -t 202610121100 "$HUB_DIR/backups/dump_latest.sql.gz"
+
+# 8.2 Test: Default import from Hub root (should pick dump_latest.sql.gz and target default db)
+"$GAR_BIN" db import
+if ! grep -q "import-db --database=db --file=$HUB_DIR/backups/dump_latest.sql.gz" "$TEST_DIR/ddev.log"; then
+    echo "❌ DB import failed: did not import latest file into default db"
+    exit 1
+fi
+
+# 8.3 Test: Alias 'dbi' from inside a worktree with relative --file
+"$GAR_BIN" switch -c feature-db 3>/dev/null
+cd "$HUB_DIR/feature-db"
+echo "custom" > "$HUB_DIR/feature-db/custom.sql"
+
+"$GAR_BIN" dbi --file custom.sql
+if ! grep -q "import-db --database=db_feature_db --file=$HUB_DIR/feature-db/custom.sql" "$TEST_DIR/ddev.log"; then
+    echo "❌ DB import with relative --file failed: did not resolve relative to invocation directory"
+    exit 1
+fi
+
+# 8.4 Test: Import targeting another branch via --target
+"$GAR_BIN" dbi --target feature-target
+if ! grep -q "import-db --database=db_feature_target --file=$HUB_DIR/backups/dump_latest.sql.gz" "$TEST_DIR/ddev.log"; then
+    echo "❌ DB import --target failed: did not target db_feature_target"
+    exit 1
+fi
+
+# 8.5 Test: Export via 'gar dbe' with custom relative file
+"$GAR_BIN" dbe --file ../backups/exported.sql.gz
+if ! grep -q "export-db --database=db_feature_db --file=$HUB_DIR/backups/exported.sql.gz" "$TEST_DIR/ddev.log"; then
+    echo "❌ DB export failed: did not export to relative path"
+    exit 1
+fi
+
+
+echo "✅ DB commands passed!"
+
 echo ""
 echo "🎉 All tests passed successfully!"

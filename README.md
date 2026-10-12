@@ -127,6 +127,45 @@ gar sync-ddev
 ```
 
 
+### Database Management (`gar db`, `gar dbi`, `gar dbe`)
+
+Arborist provides dedicated commands to manually import, export, and inspect databases across worktrees:
+
+```bash
+# Import the latest dump from DB_BACKUP_PATH into current branch (or default db)
+gar db import
+gar dbi
+
+# Import a specific dump file (paths are relative to current directory)
+gar dbi --file custom_dump.sql.gz
+gar dbi ../backups/staging.sql
+
+# Import into a specific branch's database from anywhere
+gar dbi --target feature-branch
+gar dbi --target main
+
+# Export current branch database (timestamped into DB_BACKUP_PATH)
+gar db export
+gar dbe
+
+# Export with custom destination file
+gar dbe --file ../backups/my_backup.sql.gz
+
+```
+
+#### Project Configuration (`.arborist`)
+Project-specific settings reside in `.arborist` at the root of the Hub (`$HUB_DIR/.arborist`). During `gar init`, you can configure the backup path:
+```bash
+ENV_ENGINE=ddev
+WEBROOT=docroot
+FRAMEWORK=drupal
+SPARSE_EXCLUDES="!/.ddev/ !/.lando.yml !/.lando/ !/docker-compose.yml"
+DB_BACKUP_PATH="backups"
+```
+* If `DB_BACKUP_PATH` is a directory, `gar db import` automatically selects the most recent dump file (`.sql`, `.sql.gz`, etc.).
+* Paths provided via `--file` are always evaluated relative to where you invoke the command.
+
+
 ## Development & Testing
 
 Arborist includes an end-to-end (E2E) Bash test suite verifying bare clone initialization, sparse-checkouts, directory switching, moves, and database mock calls:

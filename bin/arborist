@@ -4,6 +4,7 @@
 set -e
 
 COMMAND=${1:-}
+INVOCATION_DIR="$PWD"
 
 # Handle help command before stdout redirection so output goes to stdout
 if [ "$COMMAND" = "-h" ] || [ "$COMMAND" = "--help" ] || [ "$COMMAND" = "help" ] || [ -z "$COMMAND" ]; then
@@ -18,9 +19,14 @@ Commands:
   switch [-c] <branch>     Switch to an existing worktree or create (-c) a new one
   -m [old_branch] <new>    Move/rename a worktree, branch, and database
   remove <branch>          Remove a worktree, branch, and drop isolated database
+  db <action> [options]    Database operations (import/export) (aliases: dbi, dbe)
   sync-ddev                Synchronize Hub .ddev config from tracking branch
   hook                     Output shell integration hook for eval
   -h, --help, help         Show this help message
+
+Database Commands:
+  db import [--file <f>] [--target <b>]   Import SQL dump into database (alias: dbi)
+  db export [--file <f>] [--target <b>]   Export database to SQL dump (alias: dbe)
 
 Examples:
   gar init git@github.com:org/repo.git my-project
@@ -28,6 +34,9 @@ Examples:
   gar switch -c new-feature
   gar -m new-feature-name
   gar remove old-feature
+  gar db import
+  gar dbi --file custom.sql.gz
+  gar dbe --target feature-branch
 EOF
     exit 0
 fi
@@ -53,6 +62,8 @@ gar() {
     fi
 }
 alias arborist="gar"
+alias dbi="gar dbi"
+alias dbe="gar dbe"
 EOF
     exit 0
 fi
@@ -183,12 +194,27 @@ function cmd_init() {
         log "Detected framework: Drupal"
     fi
 
+    # 4. Database Backup Path
+    GUESS_BACKUP_PATH="backups"
+    if echo "$FILES" | grep -E "^\.ddev/db-backups$" >/dev/null; then GUESS_BACKUP_PATH=".ddev/db-backups"; fi
+    if echo "$FILES" | grep -E "^backups$" >/dev/null; then GUESS_BACKUP_PATH="backups"; fi
+    if echo "$FILES" | grep -E "^dumps$" >/dev/null; then GUESS_BACKUP_PATH="dumps"; fi
+
+    if [ "$GAR_AUTO_YES" == "true" ]; then
+        DB_BACKUP_PATH=$GUESS_BACKUP_PATH
+    else
+        read -p "Database backup path relative to hub root? [$GUESS_BACKUP_PATH]: " input_backup </dev/tty || true
+        DB_BACKUP_PATH=${input_backup:-$GUESS_BACKUP_PATH}
+    fi
+    mkdir -p "$DB_BACKUP_PATH"
+
     # Write Arborist config
     cat <<EOF > .arborist
 ENV_ENGINE=$ENV_ENGINE
 WEBROOT=$WEBROOT
 FRAMEWORK=$FRAMEWORK
 SPARSE_EXCLUDES="$SPARSE_EXCLUDES"
+DB_BACKUP_PATH="$DB_BACKUP_PATH"
 EOF
 
     # 4. Permanent Branches
@@ -504,6 +530,233 @@ function cmd_m() {
     echo "$HUB_DIR/$NEW_BRANCH" >&3
 }
 
+function cmd_db() {
+    ACTION=${1:-}
+    if [ -z "$ACTION" ] || [ "$ACTION" == "-h" ] || [ "$ACTION" == "--help" ] || [ "$ACTION" == "help" ]; then
+        cat << 'EOF'
+Usage:
+  gar db <action> [options]
+  gar dbi [options]
+  gar dbe [options]
+
+Actions:
+  import [--file <path>] [--target <branch>]   Import SQL dump into database (alias: gar dbi)
+  export [--file <path>] [--target <branch>]   Export database to SQL dump (alias: gar dbe)
+
+Options:
+  --file <path>       Path to SQL dump (relative to current directory)
+  --target <branch>   Target branch/database (defaults to current worktree or tracking branch)
+EOF
+        exit 0
+    fi
+    shift
+
+    FILE_ARG=""
+    TARGET_ARG=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --file)
+                FILE_ARG="$2"
+                shift 2
+                ;;
+            --file=*)
+                FILE_ARG="${1#*=}"
+                shift
+                ;;
+            --target)
+                TARGET_ARG="$2"
+                shift 2
+                ;;
+            --target=*)
+                TARGET_ARG="${1#*=}"
+                shift
+                ;;
+            -h|--help|help)
+                case "$ACTION" in
+                    import)
+                        cat << 'EOF'
+Usage: gar db import [--file <path>] [--target <branch>]
+Alias: gar dbi [--file <path>] [--target <branch>]
+
+Options:
+  --file <path>       Path to SQL dump (relative to current working directory).
+                      If omitted, imports the latest dump from DB_BACKUP_PATH.
+  --target <branch>   Target branch/database (defaults to current worktree or tracking branch).
+EOF
+                        ;;
+                    export)
+                        cat << 'EOF'
+Usage: gar db export [--file <path>] [--target <branch>]
+Alias: gar dbe [--file <path>] [--target <branch>]
+
+Options:
+  --file <path>       Destination path for SQL dump (relative to current working directory).
+                      If omitted, saves a timestamped dump into DB_BACKUP_PATH.
+  --target <branch>   Target branch/database to export (defaults to current worktree or tracking branch).
+EOF
+                        ;;
+                    *)
+                        echo "Unknown action: $ACTION"
+                        ;;
+                esac
+                exit 0
+                ;;
+            *)
+                if [ -z "$FILE_ARG" ] && [[ "$1" != -* ]]; then
+                    FILE_ARG="$1"
+                    shift
+                else
+                    error_exit "Unknown option for gar db $ACTION: $1"
+                fi
+                ;;
+        esac
+    done
+
+    HUB_DIR=$(check_hub_dir)
+    source "$HUB_DIR/.arborist" 2>/dev/null || true
+    ENV_ENGINE=${ENV_ENGINE:-ddev}
+    DB_BACKUP_PATH=${DB_BACKUP_PATH:-backups}
+
+    # Tracking / default branch detection
+    DEFAULT_BRANCH=$(git -C "$HUB_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' || true)
+    if [ -z "$DEFAULT_BRANCH" ]; then
+        DEFAULT_BRANCH=$(git -C "$HUB_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "develop")
+    fi
+    if [ "$DEFAULT_BRANCH" == "HEAD" ] || [ -z "$DEFAULT_BRANCH" ]; then
+        DEFAULT_BRANCH="develop"
+    fi
+
+    # Current worktree detection based on where command was invoked
+    CURRENT_BRANCH=""
+    if [ "$INVOCATION_DIR" != "$HUB_DIR" ] && [[ "$INVOCATION_DIR" == "$HUB_DIR/"* ]]; then
+        REL_INVOCATION="${INVOCATION_DIR#$HUB_DIR/}"
+        C_BRANCH="${REL_INVOCATION%%/*}"
+        if [ -d "$HUB_DIR/$C_BRANCH" ]; then
+            CURRENT_BRANCH="$C_BRANCH"
+        fi
+    fi
+
+    # Determine target branch
+    if [ -n "$TARGET_ARG" ]; then
+        TARGET_BRANCH="$TARGET_ARG"
+    elif [ -n "$CURRENT_BRANCH" ]; then
+        TARGET_BRANCH="$CURRENT_BRANCH"
+    else
+        TARGET_BRANCH="$DEFAULT_BRANCH"
+    fi
+
+    # Determine target database name
+    if [ "$TARGET_BRANCH" == "$DEFAULT_BRANCH" ] || [ "$TARGET_BRANCH" == "db" ] || [ "$TARGET_BRANCH" == "default" ]; then
+        TARGET_DB="db"
+    else
+        TARGET_DB=$(get_db_name "$TARGET_BRANCH")
+    fi
+
+    case "$ACTION" in
+        import)
+            RESOLVED_FILE=""
+            if [ -n "$FILE_ARG" ]; then
+                if [[ "$FILE_ARG" = /* ]]; then
+                    RESOLVED_FILE="$FILE_ARG"
+                else
+                    RESOLVED_FILE="$INVOCATION_DIR/$FILE_ARG"
+                fi
+                if [ -d "$(dirname "$RESOLVED_FILE")" ]; then
+                    RESOLVED_FILE="$(cd "$(dirname "$RESOLVED_FILE")" && pwd)/$(basename "$RESOLVED_FILE")"
+                fi
+                if [ ! -f "$RESOLVED_FILE" ]; then
+                    error_exit "Specified database dump file not found: $RESOLVED_FILE"
+                fi
+            else
+                if [[ "$DB_BACKUP_PATH" = /* ]]; then
+                    BACKUP_SOURCE="$DB_BACKUP_PATH"
+                else
+                    BACKUP_SOURCE="$HUB_DIR/$DB_BACKUP_PATH"
+                fi
+
+                if [ -f "$BACKUP_SOURCE" ]; then
+                    RESOLVED_FILE="$BACKUP_SOURCE"
+                elif [ -d "$BACKUP_SOURCE" ]; then
+                    latest_file=""
+                    for f in "$BACKUP_SOURCE"/*; do
+                        [ -f "$f" ] || continue
+                        case "$f" in
+                            *.sql|*.sql.gz|*.sql.bz2|*.sql.xz|*.mysql|*.mysql.gz|*.tar|*.tar.gz|*.tgz|*.zip)
+                                if [ -z "$latest_file" ] || [ "$f" -nt "$latest_file" ]; then
+                                    latest_file="$f"
+                                fi
+                                ;;
+                        esac
+                    done
+                    if [ -n "$latest_file" ]; then
+                        RESOLVED_FILE="$latest_file"
+                    else
+                        error_exit "No database dump files found in directory: $BACKUP_SOURCE"
+                    fi
+                else
+                    error_exit "Configured DB_BACKUP_PATH does not exist: $BACKUP_SOURCE"
+                fi
+            fi
+
+            log "Importing database dump into '\033[36m$TARGET_DB\033[0m'..."
+            log "Source file: $RESOLVED_FILE"
+            if [ "$ENV_ENGINE" == "ddev" ]; then
+                cd "$HUB_DIR"
+                if [ "$TARGET_DB" != "db" ]; then
+                    ddev mysql -e "CREATE DATABASE IF NOT EXISTS \`$TARGET_DB\`;" || true
+                fi
+                ddev import-db --database="$TARGET_DB" --file="$RESOLVED_FILE"
+                log "Database '\033[32m$TARGET_DB\033[0m' imported successfully."
+            else
+                error_exit "Database import for engine '$ENV_ENGINE' is not yet implemented."
+            fi
+            ;;
+
+        export)
+            RESOLVED_FILE=""
+            if [ -n "$FILE_ARG" ]; then
+                if [[ "$FILE_ARG" = /* ]]; then
+                    RESOLVED_FILE="$FILE_ARG"
+                else
+                    RESOLVED_FILE="$INVOCATION_DIR/$FILE_ARG"
+                fi
+                mkdir -p "$(dirname "$RESOLVED_FILE")"
+                RESOLVED_FILE="$(cd "$(dirname "$RESOLVED_FILE")" && pwd)/$(basename "$RESOLVED_FILE")"
+            else
+                if [[ "$DB_BACKUP_PATH" = /* ]]; then
+                    BACKUP_TARGET="$DB_BACKUP_PATH"
+                else
+                    BACKUP_TARGET="$HUB_DIR/$DB_BACKUP_PATH"
+                fi
+
+                if [ -d "$BACKUP_TARGET" ] || [[ "$DB_BACKUP_PATH" != *.* ]]; then
+                    mkdir -p "$BACKUP_TARGET"
+                    RESOLVED_FILE="$BACKUP_TARGET/${TARGET_DB}_$(date +%Y%m%d_%H%M%S).sql.gz"
+                else
+                    mkdir -p "$(dirname "$BACKUP_TARGET")"
+                    RESOLVED_FILE="$BACKUP_TARGET"
+                fi
+            fi
+
+            log "Exporting database '\033[36m$TARGET_DB\033[0m'..."
+            log "Destination: $RESOLVED_FILE"
+            if [ "$ENV_ENGINE" == "ddev" ]; then
+                cd "$HUB_DIR"
+                ddev export-db --database="$TARGET_DB" --file="$RESOLVED_FILE"
+                log "Database exported successfully to $RESOLVED_FILE"
+            else
+                error_exit "Database export for engine '$ENV_ENGINE' is not yet implemented."
+            fi
+            ;;
+
+
+        *)
+            error_exit "Unknown database action: $ACTION\nRun 'gar db' to see available actions."
+            ;;
+    esac
+}
+
 case "$COMMAND" in
     init)
         cmd_init "$@"
@@ -519,6 +772,15 @@ case "$COMMAND" in
         ;;
     sync-ddev)
         cmd_sync_ddev "$@"
+        ;;
+    db)
+        cmd_db "$@"
+        ;;
+    dbi)
+        cmd_db import "$@"
+        ;;
+    dbe)
+        cmd_db export "$@"
         ;;
     *)
         error_exit "Unknown command: $COMMAND\nRun 'gar -h' to see available commands."
