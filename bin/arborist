@@ -1222,24 +1222,35 @@ function cmd_m() {
         error_exit "Usage: gar -m [old_branch] <new_branch>"
     fi
 
+    HUB_DIR=$(check_hub_dir)
+    source "$HUB_DIR/.arborist" 2>/dev/null || true
+    ENV_ENGINE=${ENV_ENGINE:-ddev}
+
     if [ -z "$2" ]; then
         NEW_BRANCH=$1
-        OLD_BRANCH=$(basename "$PWD")
+        OLD_BRANCH=""
+        if [ "$INVOCATION_DIR" != "$HUB_DIR" ] && [[ "$INVOCATION_DIR" == "$HUB_DIR/"* ]]; then
+            local wt_top
+            wt_top=$(git -C "$INVOCATION_DIR" rev-parse --show-toplevel 2>/dev/null || true)
+            if [ -n "$wt_top" ] && [ "$wt_top" != "$HUB_DIR" ]; then
+                local b
+                b=$(git -C "$wt_top" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+                if [ -n "$b" ] && [ "$b" != "HEAD" ]; then
+                    OLD_BRANCH="$b"
+                else
+                    OLD_BRANCH="${wt_top#$HUB_DIR/}"
+                fi
+            fi
+        fi
+        if [ -z "$OLD_BRANCH" ]; then
+            error_exit "Cannot infer worktree name from the hub root. Please run from inside a worktree or specify the old branch explicitly."
+        fi
     else
         OLD_BRANCH=$1
         NEW_BRANCH=$2
     fi
 
-    HUB_DIR=$(check_hub_dir)
-    
-    if [ "$OLD_BRANCH" == "$(basename "$HUB_DIR")" ]; then
-         error_exit "Cannot infer worktree name from the hub root. Please run from inside a worktree or specify the old branch explicitly."
-    fi
-
     cd "$HUB_DIR"
-    
-    source "$HUB_DIR/.arborist" 2>/dev/null || true
-    ENV_ENGINE=${ENV_ENGINE:-ddev}
 
     if [ ! -d "$OLD_BRANCH" ]; then
         error_exit "Worktree '$OLD_BRANCH' does not exist."
@@ -1401,10 +1412,16 @@ EOF
     # Current worktree detection based on where command was invoked
     CURRENT_BRANCH=""
     if [ "$INVOCATION_DIR" != "$HUB_DIR" ] && [[ "$INVOCATION_DIR" == "$HUB_DIR/"* ]]; then
-        REL_INVOCATION="${INVOCATION_DIR#$HUB_DIR/}"
-        C_BRANCH="${REL_INVOCATION%%/*}"
-        if [ -d "$HUB_DIR/$C_BRANCH" ]; then
-            CURRENT_BRANCH="$C_BRANCH"
+        local wt_top
+        wt_top=$(git -C "$INVOCATION_DIR" rev-parse --show-toplevel 2>/dev/null || true)
+        if [ -n "$wt_top" ] && [ "$wt_top" != "$HUB_DIR" ]; then
+            local b
+            b=$(git -C "$wt_top" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+            if [ -n "$b" ] && [ "$b" != "HEAD" ]; then
+                CURRENT_BRANCH="$b"
+            else
+                CURRENT_BRANCH="${wt_top#$HUB_DIR/}"
+            fi
         fi
     fi
 

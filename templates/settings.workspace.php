@@ -13,12 +13,13 @@ if (!empty($_SERVER['DDEV_WORKSPACE_BRANCH'])) {
     $workspace_branch = $_SERVER['DDEV_WORKSPACE_BRANCH'];
 } 
 // 2. Check CLI Context (e.g. running Drush from inside a worktree)
-elseif (PHP_SAPI === 'cli' && preg_match('#^/var/www/html/([^/]+)/#', getcwd(), $matches)) {
-    $workspace_branch = $matches[1];
-}
-// 3. Fallback: Parse from __DIR__ if executed directly via PHP scripts inside a worktree
-elseif (PHP_SAPI === 'cli' && preg_match('#^/var/www/html/([^/]+)/#', __DIR__, $matches)) {
-    $workspace_branch = $matches[1];
+elseif (PHP_SAPI === 'cli') {
+    // __DIR__ is always /var/www/html/<branch_path>/<webroot>/sites/default (or /sites/default)
+    if (preg_match('#^/var/www/html/(.+?)(?:/(?:docroot|web|html|public_html|public))?/sites/#', __DIR__, $matches)) {
+        $workspace_branch = $matches[1];
+    } elseif (preg_match('#^/var/www/html/(.+?)(?:/(?:docroot|web|html|public_html|public))?(?:/|$)#', getcwd(), $matches)) {
+        $workspace_branch = $matches[1];
+    }
 }
 
 // Modify the database array if we are in a non-default branch
@@ -38,7 +39,18 @@ if (!empty($workspace_branch) && $workspace_branch !== 'develop') {
         // Silently fail connection checks, fallback to default db
     }
 
-    if ($db_exists && isset($databases['default']['default'])) {
-        $databases['default']['default']['database'] = $db_name;
+    if ($db_exists) {
+        if (!isset($databases['default']['default'])) {
+            $databases['default']['default'] = [
+                'database' => $db_name,
+                'username' => 'db',
+                'password' => 'db',
+                'host' => 'db',
+                'port' => 3306,
+                'driver' => 'mysql',
+            ];
+        } else {
+            $databases['default']['default']['database'] = $db_name;
+        }
     }
 }
