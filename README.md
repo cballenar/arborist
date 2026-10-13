@@ -110,8 +110,10 @@ Arborist includes built-in switch ergonomics:
 Provision and switch to an explicit brand-new feature branch:
 ```bash
 gar switch -c new-feature
+# Or force a live DB clone instead of importing the latest backup:
+gar switch -c --clone new-feature
 ```
-*Prompts if you would like an isolated database (`db_new-feature`) cloned from the baseline, or if you prefer falling back to the shared default DB.*
+*Prompts if you would like an isolated database (`db_new-feature`) initialized from the latest backup in `DB_BACKUP_PATH` (or cloned from the running DB if `--clone` is specified or `DB_PROVISION_STRATEGY="clone"` is set).*
 
 
 ### Move/Rename Worktree (`gar -m`)
@@ -240,12 +242,16 @@ WEBROOT=docroot
 FRAMEWORK=drupal
 SPARSE_EXCLUDES="!/.ddev/ !/.lando.yml !/.lando/ !/docker-compose.yml"
 DB_BACKUP_PATH="backups"
+DB_PROVISION_STRATEGY="backup"   # Options: "backup" (default), "clone"
 DEFAULT_BRANCH="develop"
 PROTECTED_BRANCHES="develop,main,master"
 PRUNE_TARGETS="both"   # Options: "both" (default), "db", "worktree"
 POST_PROVISION_CMD="ddev drush updb -y && ddev drush cim -y && ddev drush cr && ddev drush uli"
 ```
-* If `DB_BACKUP_PATH` is a directory, `gar db import` automatically selects the most recent dump file (`.sql`, `.sql.gz`, etc.).
+* `DB_PROVISION_STRATEGY` controls how isolated databases are populated when switching to/creating new branches. Options:
+  * `"backup"` (default): Automatically restores the newest database dump from `DB_BACKUP_PATH` (or fallback directories like `dumps`, `dump`, `db`). If no backup files exist, automatically falls back to cloning.
+  * `"clone"`: Performs a live clone of the running default database (`db`). Can also be triggered on demand via `gar switch --clone <branch>`.
+* If `DB_BACKUP_PATH` is a directory, `gar db import` and `gar switch` automatically select the most recent dump file (`.sql`, `.sql.gz`, etc.).
 * Paths provided via `--file` are always evaluated relative to where you invoke the command.
 * `PROTECTED_BRANCHES` protects baseline branches from being deleted by `gar prune`.
 * `PRUNE_TARGETS` controls whether `gar prune` sweeps both worktrees and databases, or only one of them.

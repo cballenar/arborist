@@ -270,6 +270,64 @@ function flush_env_sync() {
     fi
 }
 
+function get_latest_backup_file() {
+    local search_path="${1:-$DB_BACKUP_PATH}"
+    local backup_source=""
+
+    if [ -n "$search_path" ]; then
+        if [[ "$search_path" = /* ]]; then
+            backup_source="$search_path"
+        else
+            backup_source="$HUB_DIR/$search_path"
+        fi
+
+        if [ -f "$backup_source" ]; then
+            echo "$backup_source"
+            return 0
+        elif [ -d "$backup_source" ]; then
+            local latest_file=""
+            for f in "$backup_source"/*; do
+                [ -f "$f" ] || continue
+                case "$f" in
+                    *.sql|*.sql.gz|*.sql.bz2|*.sql.xz|*.mysql|*.mysql.gz|*.tar|*.tar.gz|*.tgz|*.zip)
+                        if [ -z "$latest_file" ] || [ "$f" -nt "$latest_file" ]; then
+                            latest_file="$f"
+                        fi
+                        ;;
+                esac
+            done
+            if [ -n "$latest_file" ]; then
+                echo "$latest_file"
+                return 0
+            fi
+        fi
+    fi
+
+    # Fallback: check common backup directories in hub root
+    local -a common_dirs=("backups" "dumps" "dump" "db" ".ddev/db-backups")
+    for fallback in "${common_dirs[@]}"; do
+        if [ "$fallback" != "$search_path" ] && [ -d "$HUB_DIR/$fallback" ]; then
+            local fallback_latest=""
+            for f in "$HUB_DIR/$fallback"/*; do
+                [ -f "$f" ] || continue
+                case "$f" in
+                    *.sql|*.sql.gz|*.sql.bz2|*.sql.xz|*.mysql|*.mysql.gz|*.tar|*.tar.gz|*.tgz|*.zip)
+                        if [ -z "$fallback_latest" ] || [ "$f" -nt "$fallback_latest" ]; then
+                            fallback_latest="$f"
+                        fi
+                        ;;
+                esac
+            done
+            if [ -n "$fallback_latest" ]; then
+                echo "$fallback_latest"
+                return 0
+            fi
+        fi
+    done
+
+    return 1
+}
+
 function provision_drupal_worktree() {
     local wt_dir="$1"
     local site_dir="$wt_dir/$WEBROOT/sites/default"
@@ -517,6 +575,7 @@ WEBROOT=$WEBROOT
 FRAMEWORK=$FRAMEWORK
 SPARSE_EXCLUDES="$SPARSE_EXCLUDES"
 DB_BACKUP_PATH="$DB_BACKUP_PATH"
+DB_PROVISION_STRATEGY="backup"
 DEFAULT_BRANCH="$DEFAULT_BRANCH"
 PROTECTED_BRANCHES="$DEFAULT_BRANCH,develop,main,master"
 PRUNE_TARGETS="both"
@@ -624,13 +683,33 @@ EOF
 function cmd_switch() {
     local CREATE_FLAG=0
     local BRANCH=""
+    local STRATEGY_OVERRIDE=""
 
-    if [ "$1" == "-c" ]; then
-        CREATE_FLAG=1
-        BRANCH=$2
-    else
-        BRANCH=$1
-    fi
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -c)
+                CREATE_FLAG=1
+                shift
+                ;;
+            --clone)
+                STRATEGY_OVERRIDE="clone"
+                shift
+                ;;
+            --backup)
+                STRATEGY_OVERRIDE="backup"
+                shift
+                ;;
+            -*)
+                error_exit "Unknown option for switch: $1\nUsage: gar switch [-c] [--clone|--backup] [branch]"
+                ;;
+            *)
+                if [ -z "$BRANCH" ]; then
+                    BRANCH="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
 
     HUB_DIR=$(check_hub_dir)
     cd "$HUB_DIR"
@@ -639,6 +718,7 @@ function cmd_switch() {
     SPARSE_EXCLUDES=${SPARSE_EXCLUDES:-"!/.ddev/ !/.lando.yml !/.lando/ !/docker-compose.yml"}
     ENV_ENGINE=${ENV_ENGINE:-ddev}
     DEFAULT_BRANCH=${DEFAULT_BRANCH:-develop}
+    DB_PROVISION_STRATEGY=${DB_PROVISION_STRATEGY:-backup}
 
     # 1. No branch argument: interactive selection or fallback to DEFAULT_BRANCH
     if [ -z "$BRANCH" ]; then
@@ -816,10 +896,26 @@ function cmd_switch() {
 
         if [[ "$create_db" =~ ^[Yy]$ ]]; then
             if [ "$ENV_ENGINE" == "ddev" ]; then
-                log "Cloning default database into $DB_NAME..."
                 ddev mysql -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`;" || true
-                ddev export-db --gzip=false --database=db | ddev import-db --database="$DB_NAME"
-                log "Isolated database $DB_NAME ready."
+                local provision_strategy="${STRATEGY_OVERRIDE:-${DB_PROVISION_STRATEGY:-backup}}"
+                if [ "$provision_strategy" == "clone" ]; then
+                    log "Cloning default database into $DB_NAME..."
+                    ddev export-db --gzip=false --database=db | ddev import-db --database="$DB_NAME"
+                    log "Isolated database $DB_NAME ready."
+                else
+                    local backup_file=""
+                    backup_file=$(get_latest_backup_file "$DB_BACKUP_PATH" 2>/dev/null) || true
+                    if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
+                        log "Importing backup dump into $DB_NAME..."
+                        log "Source: $backup_file"
+                        ddev import-db --database="$DB_NAME" --file="$backup_file"
+                        log "Isolated database $DB_NAME ready."
+                    else
+                        log "No database backup dump found in '${DB_BACKUP_PATH:-backups}'. Falling back to cloning default database..."
+                        ddev export-db --gzip=false --database=db | ddev import-db --database="$DB_NAME"
+                        log "Isolated database $DB_NAME ready."
+                    fi
+                fi
             else
                 log "Automated database cloning for $ENV_ENGINE is not yet implemented."
             fi
@@ -1973,33 +2069,14 @@ EOF
                     error_exit "Specified database dump file not found: $RESOLVED_FILE"
                 fi
             else
-                if [[ "$DB_BACKUP_PATH" = /* ]]; then
-                    BACKUP_SOURCE="$DB_BACKUP_PATH"
+                local backup_file=""
+                backup_file=$(get_latest_backup_file "$DB_BACKUP_PATH" 2>/dev/null) || true
+                if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
+                    RESOLVED_FILE="$backup_file"
+                elif [ -n "$DB_BACKUP_PATH" ] && [ ! -e "$DB_BACKUP_PATH" ] && [ ! -e "$HUB_DIR/$DB_BACKUP_PATH" ]; then
+                    error_exit "Configured DB_BACKUP_PATH does not exist: $DB_BACKUP_PATH"
                 else
-                    BACKUP_SOURCE="$HUB_DIR/$DB_BACKUP_PATH"
-                fi
-
-                if [ -f "$BACKUP_SOURCE" ]; then
-                    RESOLVED_FILE="$BACKUP_SOURCE"
-                elif [ -d "$BACKUP_SOURCE" ]; then
-                    latest_file=""
-                    for f in "$BACKUP_SOURCE"/*; do
-                        [ -f "$f" ] || continue
-                        case "$f" in
-                            *.sql|*.sql.gz|*.sql.bz2|*.sql.xz|*.mysql|*.mysql.gz|*.tar|*.tar.gz|*.tgz|*.zip)
-                                if [ -z "$latest_file" ] || [ "$f" -nt "$latest_file" ]; then
-                                    latest_file="$f"
-                                fi
-                                ;;
-                        esac
-                    done
-                    if [ -n "$latest_file" ]; then
-                        RESOLVED_FILE="$latest_file"
-                    else
-                        error_exit "No database dump files found in directory: $BACKUP_SOURCE"
-                    fi
-                else
-                    error_exit "Configured DB_BACKUP_PATH does not exist: $BACKUP_SOURCE"
+                    error_exit "No database dump files found in directory: ${DB_BACKUP_PATH:-backups}"
                 fi
             fi
 

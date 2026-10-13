@@ -316,6 +316,17 @@ if ! grep -q "export-db --database=db_feature_db --file=$HUB_DIR/backups/exporte
 fi
 
 
+# 8.6 Test: Provisioning strategy overrides (--clone)
+"$GAR_BIN" switch -c --clone feature-clone-test 3>/dev/null
+if ! grep -q "export-db --gzip=false --database=db" "$TEST_DIR/ddev.log"; then
+    echo "❌ DB switch --clone failed: did not clone via export-db"
+    exit 1
+fi
+if ! grep -q "import-db --database=db_feature_clone_test" "$TEST_DIR/ddev.log"; then
+    echo "❌ DB switch --clone failed: did not import into db_feature_clone_test"
+    exit 1
+fi
+
 echo "✅ DB commands passed!"
 
 # 9. Test: List and Prune commands with Git hooks
