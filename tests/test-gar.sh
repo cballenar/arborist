@@ -501,26 +501,45 @@ if [ ! -f "$HUB_DIR/$SLASH_DIR/docroot/sites/development.services.yml" ]; then
     exit 1
 fi
 
-# Test gar db info from inside the worktree root
+# Test gar info from inside the worktree root
 cd "$HUB_DIR/$SLASH_DIR"
-INFO_OUT=$("$GAR_BIN" db info 2>&1)
-if ! echo "$INFO_OUT" | grep -q "Current Worktree:   $SLASH_BRANCH"; then
-    echo "❌ gar db info failed to detect current worktree for slashed branch. Got:"
+INFO_OUT=$("$GAR_BIN" info 2>&1)
+if ! echo "$INFO_OUT" | grep -q "Current Branch: $SLASH_BRANCH"; then
+    echo "❌ gar info failed to detect current branch for slashed branch. Got:"
     echo "$INFO_OUT"
     exit 1
 fi
-if ! echo "$INFO_OUT" | grep -q "Target Database:    db_bsph_dwc_27_test_feature"; then
-    echo "❌ gar db info resolved incorrect database for slashed branch. Got:"
+if ! echo "$INFO_OUT" | grep -q "DB Name:        db_bsph_dwc_27_test_feature"; then
+    echo "❌ gar info resolved incorrect database for slashed branch. Got:"
+    echo "$INFO_OUT"
+    exit 1
+fi
+if ! echo "$INFO_OUT" | grep -q "URL:            https://bsph-dwc-27-test-feature.test-project.ddev.site"; then
+    echo "❌ gar info resolved incorrect URL for slashed branch. Got:"
     echo "$INFO_OUT"
     exit 1
 fi
 
-# Test gar db info from inside worktree subfolder (docroot/sites/default)
+# Test gar info from inside worktree subfolder (docroot/sites/default)
 cd "$HUB_DIR/$SLASH_DIR/docroot/sites/default"
-INFO_SUB=$("$GAR_BIN" db info 2>&1)
-if ! echo "$INFO_SUB" | grep -q "Target Database:    db_bsph_dwc_27_test_feature"; then
-    echo "❌ gar db info from subfolder resolved incorrect database. Got:"
+INFO_SUB=$("$GAR_BIN" info 2>&1)
+if ! echo "$INFO_SUB" | grep -q "DB Name:        db_bsph_dwc_27_test_feature"; then
+    echo "❌ gar info from subfolder resolved incorrect database. Got:"
     echo "$INFO_SUB"
+    exit 1
+fi
+
+# Test gar info from hub root
+cd "$HUB_DIR"
+INFO_HUB=$("$GAR_BIN" info 2>&1)
+if ! echo "$INFO_HUB" | grep -q "Current Branch: develop"; then
+    echo "❌ gar info from hub root failed to detect default branch. Got:"
+    echo "$INFO_HUB"
+    exit 1
+fi
+if ! echo "$INFO_HUB" | grep -q "URL:            https://test-project.ddev.site"; then
+    echo "❌ gar info from hub root resolved incorrect URL. Got:"
+    echo "$INFO_HUB"
     exit 1
 fi
 

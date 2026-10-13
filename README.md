@@ -163,6 +163,21 @@ STATUS       BRANCH               WORKTREE                 DATABASE             
 * **🔴 Orphaned**: Remote branch was deleted (e.g., merged PR) or database was left behind without a branch.
 
 
+### Workspace Information (`gar info`)
+
+Inspect the hosting engine, active branch, isolated database, and live site URL:
+```bash
+gar info
+```
+
+```text
+Engine:         ddev
+Current Branch: feature-hero
+DB Name:        db_feature_hero
+URL:            https://feature-hero.myproject.ddev.site
+```
+
+
 ### Prune Orphaned Resources (`gar prune`)
 
 Sweep and clean up stale worktrees, deleted branches, and orphaned databases in MariaDB/MySQL:

@@ -18,6 +18,7 @@ Commands:
   init <repo_url> <dir>    Initialize a new Hub and provision baseline worktree
   switch [-c] [branch]     Switch to a worktree, checkout remote, or create (-c) a new one
   list                     List all worktrees, branches, and database mappings
+  info                     Show engine, current branch, DB name, and site URL
   prune [options]          Prune orphaned worktrees, branches, and databases (-f, --dry-run)
   -m [old_branch] <new>    Move/rename a worktree, branch, and database
   remove [options] <branch> Remove a worktree, branch, and drop isolated database (-f, -y)
@@ -113,6 +114,7 @@ if [ -n "\$ZSH_VERSION" ]; then
             'init:Initialize a new Hub and baseline worktree'
             'switch:Switch to a worktree or create a new one'
             'list:List all worktrees, branches, and database mappings'
+            'info:Show engine, current branch, DB name, and site URL'
             'prune:Prune orphaned worktrees, branches, and databases'
             'remove:Remove a worktree, branch, and database'
             'db:Database operations (import/export)'
@@ -159,7 +161,7 @@ elif [ -n "\$BASH_VERSION" ]; then
         cur="\${COMP_WORDS[COMP_CWORD]}"
         prev="\${COMP_WORDS[COMP_CWORD-1]}"
 
-        local commands="init switch list prune remove db dbi dbe sync sync-ddev install-hooks -m -h help"
+        local commands="init switch list info prune remove db dbi dbe sync sync-ddev install-hooks -m -h help"
 
         if [ "\$COMP_CWORD" -eq 1 ]; then
             COMPREPLY=( \$(compgen -W "\$commands" -- "\$cur") )
@@ -1737,6 +1739,94 @@ function cmd_m() {
     echo "$HUB_DIR/$NEW_BRANCH" >&3
 }
 
+function cmd_info() {
+    HUB_DIR=$(check_hub_dir)
+    source "$HUB_DIR/.arborist" 2>/dev/null || true
+    ENV_ENGINE=${ENV_ENGINE:-ddev}
+    DEFAULT_BRANCH=${DEFAULT_BRANCH:-develop}
+
+    # Tracking / default branch detection
+    if [ -z "$DEFAULT_BRANCH" ]; then
+        DEFAULT_BRANCH=$(git -C "$HUB_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' || true)
+        DEFAULT_BRANCH=${DEFAULT_BRANCH:-$(git -C "$HUB_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)}
+        DEFAULT_BRANCH=${DEFAULT_BRANCH:-develop}
+    fi
+    if [ "$DEFAULT_BRANCH" == "HEAD" ]; then
+        DEFAULT_BRANCH="develop"
+    fi
+
+    # Current worktree / branch detection based on where command was invoked
+    local CURRENT_BRANCH=""
+    local DISPLAY_BRANCH=""
+    if [ "$INVOCATION_DIR" != "$HUB_DIR" ] && [[ "$INVOCATION_DIR" == "$HUB_DIR/"* ]]; then
+        local wt_top
+        wt_top=$(git -C "$INVOCATION_DIR" rev-parse --show-toplevel 2>/dev/null || true)
+        if [ -n "$wt_top" ] && [ "$wt_top" != "$HUB_DIR" ]; then
+            local b
+            b=$(git -C "$wt_top" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+            if [ -n "$b" ] && [ "$b" != "HEAD" ]; then
+                CURRENT_BRANCH="$b"
+            else
+                CURRENT_BRANCH="${wt_top#$HUB_DIR/}"
+            fi
+            DISPLAY_BRANCH="$CURRENT_BRANCH"
+        fi
+    fi
+
+    if [ -z "$CURRENT_BRANCH" ]; then
+        CURRENT_BRANCH="$DEFAULT_BRANCH"
+        DISPLAY_BRANCH="$DEFAULT_BRANCH"
+    fi
+
+    # Determine database name
+    local TARGET_DB="db"
+    if [ "$CURRENT_BRANCH" != "$DEFAULT_BRANCH" ]; then
+        TARGET_DB=$(get_db_name "$CURRENT_BRANCH")
+    fi
+
+    # Determine site URL
+    local SITE_URL=""
+    if [ "$ENV_ENGINE" == "ddev" ]; then
+        local proj_name=""
+        local proj_tld="ddev.site"
+        if [ -f "$HUB_DIR/.ddev/config.yaml" ]; then
+            proj_name=$(grep '^name:' "$HUB_DIR/.ddev/config.yaml" | head -n 1 | awk '{print $2}' | tr -d '"' | tr -d "'" 2>/dev/null || true)
+            local tld_val
+            tld_val=$(grep '^project_tld:' "$HUB_DIR/.ddev/config.yaml" | head -n 1 | awk '{print $2}' | tr -d '"' | tr -d "'" 2>/dev/null || true)
+            [ -n "$tld_val" ] && proj_tld="$tld_val"
+        fi
+
+        local scheme="${DDEV_SCHEME:-https}"
+        local base_domain=""
+        if [ -n "$DDEV_PRIMARY_URL" ]; then
+            scheme="${DDEV_PRIMARY_URL%%://*}"
+            base_domain="${DDEV_PRIMARY_URL#*://}"
+            base_domain="${base_domain%%/*}"
+        elif [ -n "$proj_name" ]; then
+            base_domain="${proj_name}.${proj_tld}"
+        fi
+
+        if [ -n "$base_domain" ]; then
+            if [ "$CURRENT_BRANCH" != "$DEFAULT_BRANCH" ]; then
+                local subdomain
+                subdomain=$(get_wt_dir_name "$CURRENT_BRANCH")
+                SITE_URL="${scheme}://${subdomain}.${base_domain}"
+            else
+                SITE_URL="${scheme}://${base_domain}"
+            fi
+        else
+            SITE_URL="<unknown>"
+        fi
+    else
+        SITE_URL="<unsupported engine: $ENV_ENGINE>"
+    fi
+
+    log "Engine:         $ENV_ENGINE"
+    log "Current Branch: $DISPLAY_BRANCH"
+    log "DB Name:        $TARGET_DB"
+    log "URL:            $SITE_URL"
+}
+
 function cmd_db() {
     ACTION=${1:-}
     if [ -z "$ACTION" ] || [ "$ACTION" == "-h" ] || [ "$ACTION" == "--help" ] || [ "$ACTION" == "help" ]; then
@@ -1977,6 +2067,9 @@ case "$COMMAND" in
         ;;
     list)
         cmd_list "$@"
+        ;;
+    info)
+        cmd_info "$@"
         ;;
     prune)
         cmd_prune "$@"
