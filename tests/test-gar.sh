@@ -630,6 +630,98 @@ fi
 
 echo "✅ Slashed Branch Resolution and Drush Wrapper passed!"
 
+# 11.5 Test: Branch Names with Capitals and Case-Insensitive Routing
+echo ""
+echo "=> Testing: Branch Names with Capitals and Case-Insensitive Routing"
+CAPS_BRANCH="Feature/CAPS-99-Test"
+CAPS_DIR="feature-caps-99-test"
+CAPS_DB="db_feature_caps_99_test"
+
+"$GAR_BIN" switch -c "$CAPS_BRANCH" 3>/dev/null
+
+if [ ! -d "$HUB_DIR/$CAPS_DIR" ]; then
+    echo "❌ Capital branch worktree directory was not normalized to lowercase! Expected $CAPS_DIR"
+    exit 1
+fi
+
+CURRENT_GIT_BRANCH=$(git -C "$HUB_DIR/$CAPS_DIR" rev-parse --abbrev-ref HEAD)
+if [ "$CURRENT_GIT_BRANCH" != "$CAPS_BRANCH" ]; then
+    echo "❌ Git branch casing was not preserved! Expected '$CAPS_BRANCH', got '$CURRENT_GIT_BRANCH'"
+    exit 1
+fi
+
+if ! grep -q "CREATE DATABASE IF NOT EXISTS \`$CAPS_DB\`" "$TEST_DIR/ddev.log"; then
+    echo "❌ Database name for capital branch was not normalized to lowercase! Expected $CAPS_DB"
+    exit 1
+fi
+
+# Verify gar info output
+cd "$HUB_DIR/$CAPS_DIR"
+INFO_CAPS=$("$GAR_BIN" info 2>&1)
+if ! echo "$INFO_CAPS" | grep -q "Current Branch: $CAPS_BRANCH"; then
+    echo "❌ gar info did not display preserved branch casing! Got:"
+    echo "$INFO_CAPS"
+    exit 1
+fi
+if ! echo "$INFO_CAPS" | grep -q "DB Name:        $CAPS_DB"; then
+    echo "❌ gar info did not display lowercase DB name! Got:"
+    echo "$INFO_CAPS"
+    exit 1
+fi
+if ! echo "$INFO_CAPS" | grep -q "URL:            https://$CAPS_DIR.test-project.ddev.site"; then
+    echo "❌ gar info did not display lowercase URL! Got:"
+    echo "$INFO_CAPS"
+    exit 1
+fi
+
+# Verify environment indicator recipe resolves branch casing
+if command -v php >/dev/null 2>&1; then
+    mkdir -p "$HUB_DIR/$CAPS_DIR/docroot/modules/contrib/environment_indicator"
+    ENV_NAME_OUT=$(php -r "
+        chdir('$HUB_DIR/$CAPS_DIR/docroot/sites/default');
+        require 'settings.workspace.php';
+        echo isset(\$config['environment_indicator.indicator']['name']) ? \$config['environment_indicator.indicator']['name'] : 'none';
+    ")
+    if [ "$ENV_NAME_OUT" != "$CAPS_BRANCH" ]; then
+        echo "❌ environment_indicator name override for capital branch failed! Expected '$CAPS_BRANCH', got '$ENV_NAME_OUT'"
+        exit 1
+    fi
+fi
+
+# Verify Drush wrapper URI is lowercase
+DRUSH_CAPS_OUT=$(DDEV_PRIMARY_URL="https://test-project.ddev.site" DDEV_SCHEME="https" "$HUB_DIR/.ddev/commands/web/drush" status 2>&1)
+if ! echo "$DRUSH_CAPS_OUT" | grep -q -- "--uri=https://$CAPS_DIR.test-project.ddev.site"; then
+    echo "❌ Drush wrapper failed to generate lowercase URI for capital branch! Got:"
+    echo "$DRUSH_CAPS_OUT"
+    exit 1
+fi
+
+# Verify switching back to develop then switching to capital branch using lowercase
+cd "$HUB_DIR"
+"$GAR_BIN" switch develop 3>/dev/null
+SWITCH_LOWER_OUT=$("$GAR_BIN" switch "$CAPS_DIR" 3>/dev/null)
+if [ ! -d "$HUB_DIR/$CAPS_DIR" ]; then
+    echo "❌ Failed to switch to capital branch using lowercase name"
+    exit 1
+fi
+
+# Test auto-healing: manually create worktree with capitals, then switch to it
+cd "$HUB_DIR"
+"$GAR_BIN" remove -f "$CAPS_BRANCH"
+
+git worktree add Legacy-Capital-Branch -b Legacy-Capital-Branch 2>/dev/null
+if [ -d "$HUB_DIR/Legacy-Capital-Branch" ]; then
+    HEAL_SWITCH_OUT=$("$GAR_BIN" switch Legacy-Capital-Branch 2>&1)
+    if [ ! -d "$HUB_DIR/legacy-capital-branch" ]; then
+        echo "❌ Switch did not auto-heal uppercase worktree directory to lowercase!"
+        exit 1
+    fi
+    cd "$HUB_DIR"
+    "$GAR_BIN" remove -f legacy-capital-branch
+fi
+
+echo "✅ Branch Names with Capitals and Case-Insensitive Routing passed!"
+
 # 12. Test: Pre-existing database detection on switch
 echo ""
 echo "=> Testing: Pre-existing database detection during switch"

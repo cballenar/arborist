@@ -243,12 +243,12 @@ function check_hub_dir() {
 
 function get_db_name() {
     local branch="$1"
-    echo "db_$(echo "$branch" | sed 's/[^a-zA-Z0-9_]/_/g')"
+    echo "db_$(echo "$branch" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_]/_/g')"
 }
 
 function get_wt_dir_name() {
     local branch="$1"
-    echo "$branch" | sed -e 's|^/||' -e 's|/$||' | tr '/' '-'
+    echo "$branch" | sed -e 's|^/||' -e 's|/$||' | tr '/' '-' | tr '[:upper:]' '[:lower:]'
 }
 
 function is_in_comma_list() {
@@ -264,6 +264,19 @@ function is_in_space_list() {
     local item="$1"
     for el in $2; do
         if [ "$el" = "$item" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+function is_in_space_list_ci() {
+    local item
+    item=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+    for el in $2; do
+        local el_lower
+        el_lower=$(echo "$el" | tr '[:upper:]' '[:lower:]')
+        if [ "$el_lower" = "$item" ]; then
             return 0
         fi
     done
@@ -623,7 +636,8 @@ EOF
         log "Injecting wildcard Nginx config..."
         mkdir -p .ddev/nginx_full
         # Dynamically inject the webroot and default branch into the nginx template
-        sed -e "s|/docroot|/$WEBROOT|g" -e "s|DEFAULT_BRANCH_PLACEHOLDER|$DEFAULT_BRANCH|g" "$TEMPLATES_DIR/workspace-nginx.conf" > .ddev/nginx_full/workspace-nginx.conf
+        local def_branch_nginx=$(echo "$DEFAULT_BRANCH" | tr '[:upper:]' '[:lower:]')
+        sed -e "s|/docroot|/$WEBROOT|g" -e "s|DEFAULT_BRANCH_PLACEHOLDER|$def_branch_nginx|g" "$TEMPLATES_DIR/workspace-nginx.conf" > .ddev/nginx_full/workspace-nginx.conf
 
         PROJECT_NAME=""
         if [ -f ".ddev/config.yaml" ]; then
@@ -780,7 +794,9 @@ function cmd_switch() {
                 local parsed_branch="${BASH_REMATCH[1]}"
                 local parsed_dir_name
                 parsed_dir_name=$(get_wt_dir_name "$parsed_branch")
-                if [ "$parsed_branch" = "$BRANCH" ] || [ "$parsed_dir_name" = "$BRANCH" ]; then
+                local norm_branch=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]')
+                local norm_parsed=$(echo "$parsed_branch" | tr '[:upper:]' '[:lower:]')
+                if [ "$parsed_branch" = "$BRANCH" ] || [ "$parsed_dir_name" = "$BRANCH" ] || [ "$norm_parsed" = "$norm_branch" ] || [ "$parsed_dir_name" = "$norm_branch" ]; then
                     local rel_p="${cur_parse_wt##*/}"
                     if [ -d "$HUB_DIR/$rel_p" ]; then
                         existing_wt="$HUB_DIR/$rel_p"
@@ -795,6 +811,17 @@ function cmd_switch() {
     fi
 
     if [ -n "$existing_wt" ] && [ -d "$existing_wt" ]; then
+        local cur_dir_name="${existing_wt##*/}"
+        local norm_dir_name=$(get_wt_dir_name "$BRANCH")
+        if [ "$cur_dir_name" != "$norm_dir_name" ]; then
+            log "Normalizing worktree directory from '$cur_dir_name' to '$norm_dir_name'..."
+            local tmp_mv="$HUB_DIR/.tmp_gar_renaming_$$"
+            mv "$existing_wt" "$tmp_mv"
+            mv "$tmp_mv" "$HUB_DIR/$norm_dir_name"
+            git worktree repair "$HUB_DIR/$norm_dir_name" >/dev/null 2>&1 || true
+            existing_wt="$HUB_DIR/$norm_dir_name"
+            flush_env_sync
+        fi
         if [ "$FRAMEWORK" == "drupal" ]; then
             provision_drupal_worktree "$existing_wt"
         fi
@@ -815,23 +842,33 @@ function cmd_switch() {
         has_remote_branch=true
     fi
 
-    # If not found directly, check if a branch exists whose sanitized dir name equals $BRANCH
+    # If not found directly, check if a branch exists whose sanitized dir name equals $BRANCH (case-insensitive)
     if [ $CREATE_FLAG -eq 0 ] && [ "$has_local_branch" = false ] && [ "$has_remote_branch" = false ]; then
+        local norm_req=$(get_wt_dir_name "$BRANCH")
+        local norm_req_b=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]')
         while IFS= read -r ref_b; do
-            if [ -n "$ref_b" ] && [ "$(get_wt_dir_name "$ref_b")" = "$BRANCH" ]; then
-                BRANCH="$ref_b"
-                has_local_branch=true
-                break
+            if [ -n "$ref_b" ]; then
+                local norm_ref=$(get_wt_dir_name "$ref_b")
+                local norm_ref_b=$(echo "$ref_b" | tr '[:upper:]' '[:lower:]')
+                if [ "$ref_b" = "$BRANCH" ] || [ "$norm_ref" = "$norm_req" ] || [ "$norm_ref_b" = "$norm_req_b" ]; then
+                    BRANCH="$ref_b"
+                    has_local_branch=true
+                    break
+                fi
             fi
         done < <(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null)
 
         if [ "$has_local_branch" = false ]; then
             while IFS= read -r ref_b; do
                 local rem_b="${ref_b#origin/}"
-                if [ -n "$rem_b" ] && [ "$(get_wt_dir_name "$rem_b")" = "$BRANCH" ]; then
-                    BRANCH="$rem_b"
-                    has_remote_branch=true
-                    break
+                if [ -n "$rem_b" ]; then
+                    local norm_rem=$(get_wt_dir_name "$rem_b")
+                    local norm_rem_b=$(echo "$rem_b" | tr '[:upper:]' '[:lower:]')
+                    if [ "$rem_b" = "$BRANCH" ] || [ "$norm_rem" = "$norm_req" ] || [ "$norm_rem_b" = "$norm_req_b" ]; then
+                        BRANCH="$rem_b"
+                        has_remote_branch=true
+                        break
+                    fi
                 fi
             done < <(git for-each-ref --format='%(refname:short)' refs/remotes/origin 2>/dev/null | grep -v '^origin/HEAD$')
         fi
@@ -885,14 +922,33 @@ function cmd_switch() {
     # Database handling for new worktree
     DB_NAME=$(get_db_name "$BRANCH")
     local db_exists=false
+    local legacy_db=""
     if [ "$ENV_ENGINE" == "ddev" ]; then
         if [ -n "$GAR_MOCK_DBS" ]; then
-            is_in_space_list "$DB_NAME" "$GAR_MOCK_DBS" && db_exists=true
+            is_in_space_list_ci "$DB_NAME" "$GAR_MOCK_DBS" && db_exists=true
         elif ddev describe >/dev/null 2>&1; then
             if ddev mysql -N -e "SHOW DATABASES LIKE '$DB_NAME';" 2>/dev/null | tr -d '| ' | grep -q "^$DB_NAME$"; then
                 db_exists=true
+            else
+                local all_dbs
+                all_dbs=$(ddev mysql -N -e "SHOW DATABASES;" 2>/dev/null | tr -d '| ' || true)
+                for edb in $all_dbs; do
+                    local edb_norm=$(echo "$edb" | tr '[:upper:]' '[:lower:]')
+                    if [ "$edb_norm" = "$DB_NAME" ]; then
+                        legacy_db="$edb"
+                        break
+                    fi
+                done
             fi
         fi
+    fi
+
+    if [ -n "$legacy_db" ] && [ "$legacy_db" != "$DB_NAME" ]; then
+        log "Migrating legacy capitalized database '$legacy_db' to '$DB_NAME'..."
+        ddev mysql -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`;" || true
+        ddev export-db --gzip=false --database="$legacy_db" | ddev import-db --database="$DB_NAME"
+        ddev mysql -e "DROP DATABASE \`$legacy_db\`;" || true
+        db_exists=true
     fi
 
     if [ "$db_exists" = true ]; then
@@ -1003,6 +1059,7 @@ EOF
     target_wt_dir=$(get_wt_dir_name "$TARGET")
     local wt_to_remove=""
     local branch_to_remove=""
+    local norm_target=$(echo "$TARGET" | tr '[:upper:]' '[:lower:]')
     local cur_parse_wt=""
     while IFS= read -r line; do
         if [[ "$line" =~ ^worktree[[:space:]]+(.*) ]]; then
@@ -1012,8 +1069,10 @@ EOF
             local rel_wt="${cur_parse_wt#$HUB_DIR/}"
             local sanitized_b
             sanitized_b=$(get_wt_dir_name "$b")
+            local norm_b=$(echo "$b" | tr '[:upper:]' '[:lower:]')
+            local norm_rel=$(echo "$rel_wt" | tr '[:upper:]' '[:lower:]')
 
-            if [ "$b" = "$TARGET" ] || [ "$rel_wt" = "$TARGET" ] || [ "$sanitized_b" = "$TARGET" ] || [ "$cur_parse_wt" = "$TARGET" ] || [ "$cur_parse_wt" = "$HUB_DIR/$TARGET" ] || [ "$cur_parse_wt" = "$HUB_DIR/$target_wt_dir" ]; then
+            if [ "$b" = "$TARGET" ] || [ "$rel_wt" = "$TARGET" ] || [ "$sanitized_b" = "$TARGET" ] || [ "$cur_parse_wt" = "$TARGET" ] || [ "$cur_parse_wt" = "$HUB_DIR/$TARGET" ] || [ "$cur_parse_wt" = "$HUB_DIR/$target_wt_dir" ] || [ "$norm_b" = "$norm_target" ] || [ "$norm_rel" = "$norm_target" ] || [ "$sanitized_b" = "$target_wt_dir" ]; then
                 wt_to_remove="$cur_parse_wt"
                 branch_to_remove="$b"
                 break
@@ -1067,6 +1126,10 @@ EOF
         if [ "$ENV_ENGINE" == "ddev" ]; then
             log "Dropping database $DB_NAME..."
             ddev mysql -e "DROP DATABASE IF EXISTS \`$DB_NAME\`;" || true
+            local legacy_db_name="db_$(echo "$branch_to_remove" | sed 's/[^a-zA-Z0-9_]/_/g')"
+            if [ "$legacy_db_name" != "$DB_NAME" ]; then
+                ddev mysql -e "DROP DATABASE IF EXISTS \`$legacy_db_name\`;" || true
+            fi
         else
             log "Automated database dropping for $ENV_ENGINE is not yet implemented."
         fi
@@ -1231,7 +1294,7 @@ EOF
                     db_status="Missing"
                 fi
             else
-                if is_in_space_list "$db_name" "$existing_dbs"; then
+                if is_in_space_list_ci "$db_name" "$existing_dbs"; then
                     db_status="Ready"
                 else
                     db_status="Missing"
@@ -1262,7 +1325,7 @@ EOF
     # 2. Databases in MySQL without worktree
     if [ "$ddev_running" = true ]; then
         for db in $existing_dbs; do
-            if ! is_in_space_list "$db" "$PROCESSED_DBS"; then
+            if ! is_in_space_list_ci "$db" "$PROCESSED_DBS"; then
                 local icon="🔴"
                 local status_text="Orphaned"
                 local l1="Database: $db"
@@ -1311,7 +1374,7 @@ EOF
 
                 local db_status="No worktree"
                 if [ "$ddev_running" = true ]; then
-                    if is_in_space_list "$db_name" "$existing_dbs"; then
+                    if is_in_space_list_ci "$db_name" "$existing_dbs"; then
                         db_status="Ready"
                     else
                         db_status="Missing"
@@ -1526,8 +1589,13 @@ EOF
             if [ "$skip_branch" = false ]; then
                 prune_branches+=("$b")
                 local db_name=$(get_db_name "$b")
-                if [ "$ddev_running" = true ] && is_in_space_list "$db_name" "$existing_dbs"; then
-                    prune_dbs+=("$db_name")
+                if [ "$ddev_running" = true ]; then
+                    for edb in $existing_dbs; do
+                        local norm_edb=$(echo "$edb" | tr '[:upper:]' '[:lower:]')
+                        if [ "$norm_edb" = "$db_name" ]; then
+                            prune_dbs+=("$edb")
+                        fi
+                    done
                 fi
             fi
         fi
@@ -1552,10 +1620,12 @@ EOF
                 continue
             fi
 
-            # Check if db belongs to ANY active branch
+            # Check if db belongs to ANY active branch (case-insensitive)
             local has_branch=false
+            local norm_db=$(echo "$db" | tr '[:upper:]' '[:lower:]')
             for b in "${all_heads[@]}"; do
-                if [ "$(get_db_name "$b")" == "$db" ]; then
+                local b_db=$(get_db_name "$b")
+                if [ "$b_db" = "$norm_db" ]; then
                     has_branch=true
                     break
                 fi
@@ -1565,7 +1635,8 @@ EOF
                 # Check if protected
                 local is_prot=false
                 for pb in $(echo "$PROTECTED_BRANCHES" | tr ',' ' '); do
-                    if [ "$(get_db_name "$pb")" == "$db" ]; then
+                    local pb_db=$(get_db_name "$pb")
+                    if [ "$pb_db" = "$norm_db" ]; then
                         is_prot=true
                         break
                     fi
@@ -1697,7 +1768,8 @@ function cmd_sync() {
 
         log "  • Updating Nginx wildcard configuration..."
         mkdir -p .ddev/nginx_full
-        sed -e "s|/docroot|/$WEBROOT|g" -e "s|DEFAULT_BRANCH_PLACEHOLDER|$DEFAULT_BRANCH|g" "$TEMPLATES_DIR/workspace-nginx.conf" > .ddev/nginx_full/workspace-nginx.conf
+        local def_branch_nginx=$(echo "$DEFAULT_BRANCH" | tr '[:upper:]' '[:lower:]')
+        sed -e "s|/docroot|/$WEBROOT|g" -e "s|DEFAULT_BRANCH_PLACEHOLDER|$def_branch_nginx|g" "$TEMPLATES_DIR/workspace-nginx.conf" > .ddev/nginx_full/workspace-nginx.conf
 
         log "  • Verifying DDEV wildcard routing and docroot..."
         local project_name=""
@@ -1717,24 +1789,49 @@ function cmd_sync() {
     # 4. Sync and heal all active worktrees
     log "  • Auditing and healing active worktrees..."
     local cur_wt=""
+    local cur_branch=""
     local is_bare=false
     while IFS= read -r line || [ -n "$line" ]; do
         if [[ "$line" =~ ^worktree[[:space:]]+(.*) ]]; then
             cur_wt="${BASH_REMATCH[1]}"
+            cur_branch=""
             is_bare=false
         elif [ "$line" = "bare" ]; then
             is_bare=true
+        elif [[ "$line" =~ ^branch[[:space:]]+refs/heads/(.*) ]]; then
+            cur_branch="${BASH_REMATCH[1]}"
         elif [ -z "$line" ] && [ -n "$cur_wt" ]; then
             if [ "$is_bare" = false ] && [ -d "$cur_wt" ]; then
+                local cur_dir_name="${cur_wt##*/}"
+                local norm_dir_name=$(get_wt_dir_name "$cur_branch")
+                if [ -n "$cur_branch" ] && [ "$cur_dir_name" != "$norm_dir_name" ]; then
+                    log "    Normalizing worktree directory '$cur_dir_name' -> '$norm_dir_name'..."
+                    local tmp_mv="$HUB_DIR/.tmp_gar_renaming_$$"
+                    mv "$cur_wt" "$tmp_mv"
+                    mv "$tmp_mv" "$HUB_DIR/$norm_dir_name"
+                    git worktree repair "$HUB_DIR/$norm_dir_name" >/dev/null 2>&1 || true
+                    cur_wt="$HUB_DIR/$norm_dir_name"
+                fi
                 if [ "$FRAMEWORK" == "drupal" ]; then
                     provision_drupal_worktree "$cur_wt"
                 fi
             fi
             cur_wt=""
+            cur_branch=""
             is_bare=false
         fi
     done < <(git worktree list --porcelain 2>/dev/null && echo "")
     if [ -n "$cur_wt" ] && [ "$is_bare" = false ] && [ -d "$cur_wt" ]; then
+        local cur_dir_name="${cur_wt##*/}"
+        local norm_dir_name=$(get_wt_dir_name "$cur_branch")
+        if [ -n "$cur_branch" ] && [ "$cur_dir_name" != "$norm_dir_name" ]; then
+            log "    Normalizing worktree directory '$cur_dir_name' -> '$norm_dir_name'..."
+            local tmp_mv="$HUB_DIR/.tmp_gar_renaming_$$"
+            mv "$cur_wt" "$tmp_mv"
+            mv "$tmp_mv" "$HUB_DIR/$norm_dir_name"
+            git worktree repair "$HUB_DIR/$norm_dir_name" >/dev/null 2>&1 || true
+            cur_wt="$HUB_DIR/$norm_dir_name"
+        fi
         if [ "$FRAMEWORK" == "drupal" ]; then
             provision_drupal_worktree "$cur_wt"
         fi
@@ -1788,12 +1885,20 @@ function cmd_m() {
 
     cd "$HUB_DIR"
 
-    if [ ! -d "$OLD_BRANCH" ]; then
+    local old_wt_dir=$(get_wt_dir_name "$OLD_BRANCH")
+    local new_wt_dir=$(get_wt_dir_name "$NEW_BRANCH")
+
+    local old_path=""
+    if [ -d "$OLD_BRANCH" ]; then
+        old_path="$OLD_BRANCH"
+    elif [ -d "$old_wt_dir" ]; then
+        old_path="$old_wt_dir"
+    else
         error_exit "Worktree '$OLD_BRANCH' does not exist."
     fi
 
-    if [ -d "$NEW_BRANCH" ]; then
-        error_exit "Target directory '$NEW_BRANCH' already exists."
+    if [ -d "$new_wt_dir" ] && [ "$old_path" != "$new_wt_dir" ]; then
+        error_exit "Target directory '$new_wt_dir' already exists."
     fi
 
     if [ "$GAR_AUTO_YES" == "true" ]; then
@@ -1810,11 +1915,15 @@ function cmd_m() {
 
     log "Moving worktree and branch from '$OLD_BRANCH' to '$NEW_BRANCH'..."
     
-    # Move physical directory
-    mv "$OLD_BRANCH" "$NEW_BRANCH"
+    # Move physical directory (handling case changes on case-insensitive filesystems)
+    if [ "$old_path" != "$new_wt_dir" ]; then
+        local tmp_mv="$HUB_DIR/.tmp_gar_renaming_$$"
+        mv "$old_path" "$tmp_mv"
+        mv "$tmp_mv" "$new_wt_dir"
+    fi
     
     # Repair git worktree paths
-    git worktree repair "$NEW_BRANCH" > /dev/null 2>&1 || true
+    git worktree repair "$new_wt_dir" > /dev/null 2>&1 || true
     
     # Move/mirror git branch
     git branch -m "$OLD_BRANCH" "$NEW_BRANCH"
@@ -1843,10 +1952,10 @@ function cmd_m() {
 
     flush_env_sync
 
-    log "Worktree moved to '$NEW_BRANCH'."
+    log "Worktree moved to '$new_wt_dir'."
     
     # Output the new path so the shell wrapper can cd into it
-    echo "$HUB_DIR/$NEW_BRANCH" >&3
+    echo "$HUB_DIR/$new_wt_dir" >&3
 }
 
 function cmd_info() {
@@ -1888,9 +1997,12 @@ function cmd_info() {
         DISPLAY_BRANCH="$DEFAULT_BRANCH"
     fi
 
+    local norm_curr=$(echo "$CURRENT_BRANCH" | tr '[:upper:]' '[:lower:]')
+    local norm_def=$(echo "$DEFAULT_BRANCH" | tr '[:upper:]' '[:lower:]')
+
     # Determine database name
     local TARGET_DB="db"
-    if [ "$CURRENT_BRANCH" != "$DEFAULT_BRANCH" ]; then
+    if [ "$norm_curr" != "$norm_def" ]; then
         TARGET_DB=$(get_db_name "$CURRENT_BRANCH")
     fi
 
@@ -1917,7 +2029,7 @@ function cmd_info() {
         fi
 
         if [ -n "$base_domain" ]; then
-            if [ "$CURRENT_BRANCH" != "$DEFAULT_BRANCH" ]; then
+            if [ "$norm_curr" != "$norm_def" ]; then
                 local subdomain
                 subdomain=$(get_wt_dir_name "$CURRENT_BRANCH")
                 SITE_URL="${scheme}://${subdomain}.${base_domain}"
@@ -2061,7 +2173,9 @@ EOF
     fi
 
     # Determine target database name
-    if [ "$TARGET_BRANCH" == "$DEFAULT_BRANCH" ] || [ "$TARGET_BRANCH" == "db" ] || [ "$TARGET_BRANCH" == "default" ]; then
+    local norm_target_b=$(echo "$TARGET_BRANCH" | tr '[:upper:]' '[:lower:]')
+    local norm_def_b=$(echo "$DEFAULT_BRANCH" | tr '[:upper:]' '[:lower:]')
+    if [ "$norm_target_b" == "$norm_def_b" ] || [ "$norm_target_b" == "db" ] || [ "$norm_target_b" == "default" ]; then
         TARGET_DB="db"
     else
         TARGET_DB=$(get_db_name "$TARGET_BRANCH")

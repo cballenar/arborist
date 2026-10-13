@@ -31,6 +31,24 @@ if (!file_exists($head_file)) {
         $head_file = $hub_dir . '/.git/worktrees/' . $workspace_branch . '/HEAD';
     }
 }
+if (!file_exists($head_file)) {
+    foreach (['/var/www/html/.git/worktrees', dirname(__DIR__, 4) . '/.git/worktrees'] as $wt_base) {
+        if (is_dir($wt_base)) {
+            $entries = scandir($wt_base);
+            if ($entries) {
+                foreach ($entries as $entry) {
+                    if ($entry !== '.' && $entry !== '..' && strcasecmp($entry, $workspace_branch) === 0) {
+                        $cand_head = $wt_base . '/' . $entry . '/HEAD';
+                        if (file_exists($cand_head)) {
+                            $head_file = $cand_head;
+                            break 2;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 if (file_exists($head_file)) {
     $head_content = trim((string) @file_get_contents($head_file));
     if (preg_match('#^ref: refs/heads/(.+)#', $head_content, $ref_matches)) {
@@ -68,8 +86,8 @@ if ($has_env_indicator) {
 }
 
 // 5. Modify the database array if we are in a non-default branch
-if (!empty($workspace_branch) && $workspace_branch !== 'develop') {
-    $db_name = 'db_' . preg_replace('/[^a-zA-Z0-9_]/', '_', $workspace_branch);
+if (!empty($workspace_branch) && strtolower($workspace_branch) !== strtolower('develop')) {
+    $db_name = 'db_' . strtolower(preg_replace('/[^a-zA-Z0-9_]/', '_', $workspace_branch));
     
     // Check if the isolated database actually exists (so we can fallback to the main db if it doesn't)
     $db_exists = false;
@@ -79,6 +97,16 @@ if (!empty($workspace_branch) && $workspace_branch !== 'develop') {
         $result = $pdo->query("SHOW DATABASES LIKE '$db_name'")->fetch();
         if ($result) {
             $db_exists = true;
+        } else {
+            // Case-insensitive fallback for databases created with legacy casing
+            $all_dbs = $pdo->query("SHOW DATABASES")->fetchAll(PDO::FETCH_COLUMN);
+            foreach ($all_dbs as $existing_db) {
+                if (strcasecmp($existing_db, $db_name) === 0) {
+                    $db_name = $existing_db;
+                    $db_exists = true;
+                    break;
+                }
+            }
         }
     } catch (Exception $e) {
         // Silently fail connection checks, fallback to default db

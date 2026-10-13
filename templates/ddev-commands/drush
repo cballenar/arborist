@@ -81,8 +81,10 @@ if [ "$HAS_URI" = false ] && [ -n "$DDEV_PRIMARY_URL" ]; then
     BASE_DOMAIN="${DDEV_PRIMARY_URL#*://}"
     BASE_DOMAIN="${BASE_DOMAIN%%/*}"
 
-    if [ -n "$WT_NAME" ] && [ "$WT_NAME" != "$DEFAULT_BRANCH" ]; then
-        SUBDOMAIN=$(echo "$WT_NAME" | tr '/' '-')
+    NORM_WT=$(echo "$WT_NAME" | tr '[:upper:]' '[:lower:]')
+    NORM_DEF=$(echo "$DEFAULT_BRANCH" | tr '[:upper:]' '[:lower:]')
+    if [ -n "$WT_NAME" ] && [ "$NORM_WT" != "$NORM_DEF" ]; then
+        SUBDOMAIN=$(echo "$WT_NAME" | tr '/' '-' | tr '[:upper:]' '[:lower:]')
         TARGET_URI="${SCHEME}://${SUBDOMAIN}.${BASE_DOMAIN}"
     else
         TARGET_URI="$DDEV_PRIMARY_URL"
