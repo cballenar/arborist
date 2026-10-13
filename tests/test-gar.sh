@@ -37,7 +37,7 @@ export PATH="$TEST_DIR/bin:$PATH"
 mkdir -p "$TEST_DIR/bin"
 cat << 'EOF' > "$TEST_DIR/bin/ddev"
 #!/bin/bash
-echo "[MOCK DDEV] Executed: ddev $*"
+echo "[MOCK DDEV] Executed: ddev $*" >&2
 echo "$*" >> "/tmp/gar-test-env/ddev.log"
 
 if [ "$1" = "describe" ]; then
@@ -71,6 +71,27 @@ if [ "$1" = "mysql" ]; then
         fi
         exit 0
     fi
+fi
+
+if [ "$1" = "export-db" ]; then
+    if [[ "$*" != *"--file"* ]]; then
+        if [[ "$*" != *"--gzip=false"* ]]; then
+            printf '\x1f\x8b\x08\x00'
+        else
+            echo "CREATE TABLE test (id INT);"
+        fi
+    fi
+    exit 0
+fi
+
+if [ "$1" = "import-db" ]; then
+    if [[ "$*" != *"--file"* ]]; then
+        if python3 -c "import sys; sys.exit(0 if b'\x00' in sys.stdin.buffer.read() else 1)" 2>/dev/null; then
+            echo "ERROR: ASCII '\0' appeared in the statement, but this is not allowed unless option --binary-mode is enabled and mysql is run in non-interactive mode. Set --binary-mode to 1 if ASCII '\0' is expected. Query: ''." >&2
+            exit 1
+        fi
+    fi
+    exit 0
 fi
 EOF
 chmod +x "$TEST_DIR/bin/ddev"

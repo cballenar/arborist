@@ -818,7 +818,7 @@ function cmd_switch() {
             if [ "$ENV_ENGINE" == "ddev" ]; then
                 log "Cloning default database into $DB_NAME..."
                 ddev mysql -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`;" || true
-                ddev export-db --database=db | ddev import-db --database=$DB_NAME
+                ddev export-db --gzip=false --database=db | ddev import-db --database="$DB_NAME"
                 log "Isolated database $DB_NAME ready."
             else
                 log "Automated database cloning for $ENV_ENGINE is not yet implemented."
@@ -1723,7 +1723,7 @@ function cmd_m() {
         if [ "$ENV_ENGINE" == "ddev" ]; then
             log "Migrating database from $OLD_DB_NAME to $NEW_DB_NAME..."
             ddev mysql -e "CREATE DATABASE IF NOT EXISTS \`$NEW_DB_NAME\`;" || true
-            ddev export-db --database="$OLD_DB_NAME" | ddev import-db --database="$NEW_DB_NAME"
+            ddev export-db --gzip=false --database="$OLD_DB_NAME" | ddev import-db --database="$NEW_DB_NAME"
             ddev mysql -e "DROP DATABASE \`$OLD_DB_NAME\`;" || true
             log "Database migrated successfully."
         else
