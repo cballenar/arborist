@@ -56,7 +56,71 @@ if (file_exists($head_file)) {
     }
 }
 
-// 4. Environment Indicator override (if module is installed/present)
+// 4. Load worktree .env environment variables into PHP (getenv, $_ENV, $_SERVER)
+$worktree_dirs = [];
+if (!empty($workspace_branch)) {
+    $worktree_dirs[] = '/var/www/html/' . $workspace_branch;
+    $hub_dir = dirname(__DIR__, 4);
+    if (is_dir($hub_dir . '/' . $workspace_branch)) {
+        $worktree_dirs[] = $hub_dir . '/' . $workspace_branch;
+    }
+}
+if (isset($app_root) && is_dir(dirname($app_root))) {
+    $worktree_dirs[] = dirname($app_root);
+}
+if (defined('DRUPAL_ROOT') && is_dir(dirname(DRUPAL_ROOT))) {
+    $worktree_dirs[] = dirname(DRUPAL_ROOT);
+}
+$cand_dir = dirname(__DIR__, 3);
+if (is_dir($cand_dir) && !in_array($cand_dir, $worktree_dirs, true)) {
+    $worktree_dirs[] = $cand_dir;
+}
+$cand_dir_root = dirname(__DIR__, 2);
+if (is_dir($cand_dir_root) && !in_array($cand_dir_root, $worktree_dirs, true)) {
+    $worktree_dirs[] = $cand_dir_root;
+}
+
+foreach ($worktree_dirs as $cand_wt) {
+    if (empty($cand_wt) || !is_dir($cand_wt)) {
+        continue;
+    }
+    $has_loaded = false;
+    foreach ([$cand_wt . '/.env', $cand_wt . '/.env.local'] as $cand_env) {
+        if (file_exists($cand_env) && is_readable($cand_env)) {
+            $lines = @file($cand_env, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            if ($lines !== false) {
+                foreach ($lines as $line) {
+                    $line = trim($line);
+                    if ($line === '' || strpos($line, '#') === 0) {
+                        continue;
+                    }
+                    if (strpos($line, '=') !== false) {
+                        list($key, $val) = explode('=', $line, 2);
+                        $key = trim($key);
+                        $val = trim($val);
+                        if (strpos($key, 'export ') === 0) {
+                            $key = trim(substr($key, 7));
+                        }
+                        if (preg_match('/^(["\'])(.*)\1$/', $val, $q_matches)) {
+                            $val = $q_matches[2];
+                        } elseif (strpos($val, ' #') !== false) {
+                            $val = trim(substr($val, 0, strpos($val, ' #')));
+                        }
+                        putenv("{$key}={$val}");
+                        $_ENV[$key] = $val;
+                        $_SERVER[$key] = $val;
+                    }
+                }
+                $has_loaded = true;
+            }
+        }
+    }
+    if ($has_loaded) {
+        break;
+    }
+}
+
+// 5. Environment Indicator override (if module is installed/present)
 $has_env_indicator = isset($config['environment_indicator.indicator']);
 if (!$has_env_indicator) {
     $app_root = isset($app_root) ? $app_root : (defined('DRUPAL_ROOT') ? DRUPAL_ROOT : dirname(__DIR__, 2));
@@ -85,7 +149,7 @@ if ($has_env_indicator) {
     $config['environment_indicator.indicator']['name'] = $display_branch;
 }
 
-// 5. Modify the database array if we are in a non-default branch
+// 6. Modify the database array if we are in a non-default branch
 if (!empty($workspace_branch) && strtolower($workspace_branch) !== strtolower('develop')) {
     $db_name = 'db_' . strtolower(preg_replace('/[^a-zA-Z0-9_]/', '_', $workspace_branch));
     

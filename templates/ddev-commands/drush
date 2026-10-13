@@ -58,6 +58,31 @@ if [ -z "$DRUSH_PATH" ] && [ -x "$HUB_ROOT/$DEFAULT_BRANCH/vendor/bin/drush" ]; 
     [ -z "$WT_DIR" ] && WT_DIR="$HUB_ROOT/$DEFAULT_BRANCH"
 fi
 
+# Source worktree .env environment variables if present
+if [ -n "$WT_DIR" ] && [ -f "$WT_DIR/.env" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$WT_DIR/.env"
+    set +a
+    if [ -f "$WT_DIR/.env.local" ]; then
+        set -a
+        # shellcheck disable=SC1090
+        . "$WT_DIR/.env.local"
+        set +a
+    fi
+elif [ -f "./.env" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "./.env"
+    set +a
+    if [ -f "./.env.local" ]; then
+        set -a
+        # shellcheck disable=SC1090
+        . "./.env.local"
+        set +a
+    fi
+fi
+
 # Detect workspace URI if not already passed in arguments
 HAS_URI=false
 for arg in "$@"; do

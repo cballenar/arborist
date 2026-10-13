@@ -361,7 +361,7 @@ function provision_drupal_worktree() {
     # Ensure injected files are excluded in git
     mkdir -p "$HUB_DIR/.git/info"
     touch "$HUB_DIR/.git/info/exclude"
-    for pattern in "settings.workspace.php" "settings.local.php" "settings.ddev.php" "development.services.yml"; do
+    for pattern in "settings.workspace.php" "settings.local.php" "settings.ddev.php" "development.services.yml" ".env" ".env.local"; do
         if ! grep -q "^$pattern$" "$HUB_DIR/.git/info/exclude" 2>/dev/null; then
             echo "$pattern" >> "$HUB_DIR/.git/info/exclude"
         fi
@@ -406,6 +406,19 @@ function provision_drupal_worktree() {
             cp "$def_sites_dir/development.services.yml" "$sites_dir/development.services.yml"
         elif [ -f "$wt_dir/$WEBROOT/core/assets/scaffold/files/development.services.yml" ]; then
             cp "$wt_dir/$WEBROOT/core/assets/scaffold/files/development.services.yml" "$sites_dir/development.services.yml"
+        fi
+    fi
+
+    # 5. .env file handling (seed from default branch or .env.example if missing)
+    local wt_env="$wt_dir/.env"
+    local def_env="$HUB_DIR/$def_wt_dir/.env"
+    if [ ! -f "$wt_env" ]; then
+        if [ -f "$def_env" ]; then
+            log "  • Seeding .env from default branch ($DEFAULT_BRANCH)..."
+            cp "$def_env" "$wt_env"
+        elif [ -f "$wt_dir/.env.example" ]; then
+            log "  • Seeding .env from .env.example..."
+            cp "$wt_dir/.env.example" "$wt_env"
         fi
     fi
 }
@@ -627,6 +640,10 @@ EOF
             fi
             if [ ! -f "$WEBROOT/sites/development.services.yml" ] && [ -f "$WEBROOT/core/assets/scaffold/files/development.services.yml" ]; then
                 cp "$WEBROOT/core/assets/scaffold/files/development.services.yml" "$WEBROOT/sites/development.services.yml"
+            fi
+            if [ ! -f ".env" ] && [ -f ".env.example" ]; then
+                log "Seeding .env from .env.example..."
+                cp ".env.example" ".env"
             fi
         fi
     fi
@@ -1748,7 +1765,7 @@ function cmd_sync() {
     log "  • Updating Git exclude patterns..."
     mkdir -p "$HUB_DIR/.git/info"
     touch "$HUB_DIR/.git/info/exclude"
-    for pattern in "settings.workspace.php" "settings.local.php" "settings.ddev.php" "development.services.yml"; do
+    for pattern in "settings.workspace.php" "settings.local.php" "settings.ddev.php" "development.services.yml" ".env" ".env.local"; do
         if ! grep -q "^$pattern$" "$HUB_DIR/.git/info/exclude" 2>/dev/null; then
             echo "$pattern" >> "$HUB_DIR/.git/info/exclude"
         fi

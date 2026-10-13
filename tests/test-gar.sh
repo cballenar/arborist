@@ -98,7 +98,7 @@ chmod +x "$TEST_DIR/bin/ddev"
 
 cat << 'EOF' > "$TEST_DIR/bin/drush"
 #!/bin/bash
-echo "[MOCK DRUSH] $*"
+echo "[MOCK DRUSH] ${FEATURE_API_KEY:+KEY=$FEATURE_API_KEY }$*"
 EOF
 chmod +x "$TEST_DIR/bin/drush"
 chmod +x "$TEST_DIR/bin/ddev"
@@ -781,6 +781,89 @@ if ! grep -q "^mutagen sync" "/tmp/gar-test-env/ddev.log"; then
     exit 1
 fi
 echo "✅ Mutagen sync daemon flush passed!"
+
+# 15. Test: Worktree .env Isolation, Seeding, and Runtime Evaluation
+echo ""
+echo "=> Testing: Worktree .env Isolation, Seeding, and Runtime Evaluation"
+
+# 15a. Verify .env and .env.local are excluded in git info exclude
+if ! grep -q "^\.env$" "$HUB_DIR/.git/info/exclude" 2>/dev/null; then
+    echo "❌ .env is not in $HUB_DIR/.git/info/exclude!"
+    exit 1
+fi
+if ! grep -q "^\.env\.local$" "$HUB_DIR/.git/info/exclude" 2>/dev/null; then
+    echo "❌ .env.local is not in $HUB_DIR/.git/info/exclude!"
+    exit 1
+fi
+
+# 15b. Create .env in develop to test automatic seeding on switch -c
+cat << 'EOF' > "$HUB_DIR/develop/.env"
+GLOBAL_TEST_VAR="seeded_from_develop"
+OVERRIDE_VAR="base_develop"
+EOF
+
+"$GAR_BIN" switch -c feature-env-test
+if [ ! -f "$HUB_DIR/feature-env-test/.env" ]; then
+    echo "❌ feature-env-test/.env was not seeded from develop!"
+    exit 1
+fi
+if ! grep -q 'GLOBAL_TEST_VAR="seeded_from_develop"' "$HUB_DIR/feature-env-test/.env"; then
+    echo "❌ feature-env-test/.env does not contain seeded content from develop!"
+    exit 1
+fi
+
+# 15c. Add branch-specific overrides, quotes, comments, and local overrides
+cat << 'EOF' >> "$HUB_DIR/feature-env-test/.env"
+FEATURE_API_KEY="feature_isolated_key_123"
+QUOTED_HASH='secret#with#hash'
+COMMENT_VAR=hello # unquoted comment
+EOF
+
+cat << 'EOF' > "$HUB_DIR/feature-env-test/.env.local"
+OVERRIDE_VAR="local_override_active"
+EOF
+
+# 15d. Verify PHP evaluation via settings.workspace.php
+if command -v php >/dev/null 2>&1; then
+    ENV_EVAL_OUT=$(php -r "
+        chdir('$HUB_DIR/feature-env-test/docroot/sites/default');
+        require 'settings.workspace.php';
+        \$k1 = getenv('FEATURE_API_KEY');
+        \$k2 = getenv('QUOTED_HASH');
+        \$k3 = getenv('COMMENT_VAR');
+        \$k4 = getenv('OVERRIDE_VAR');
+        \$k5 = isset(\$_ENV['FEATURE_API_KEY']) ? \$_ENV['FEATURE_API_KEY'] : '';
+        \$k6 = isset(\$_SERVER['FEATURE_API_KEY']) ? \$_SERVER['FEATURE_API_KEY'] : '';
+        if (\$k1 === 'feature_isolated_key_123' &&
+            \$k2 === 'secret#with#hash' &&
+            \$k3 === 'hello' &&
+            \$k4 === 'local_override_active' &&
+            \$k5 === 'feature_isolated_key_123' &&
+            \$k6 === 'feature_isolated_key_123') {
+            echo 'ENV_OK';
+        } else {
+            echo \"FAIL: k1=\$k1 k2=\$k2 k3=\$k3 k4=\$k4 k5=\$k5 k6=\$k6\";
+        }
+    ")
+    if [ "$ENV_EVAL_OUT" != "ENV_OK" ]; then
+        echo "❌ settings.workspace.php failed to evaluate worktree .env! Output: $ENV_EVAL_OUT"
+        exit 1
+    fi
+fi
+
+# 15e. Verify DDEV drush command wrapper sources .env
+DRUSH_WRAPPER_OUT=$(cd "$HUB_DIR/feature-env-test" && "$HUB_DIR/.ddev/commands/web/drush" status 2>/dev/null)
+if ! echo "$DRUSH_WRAPPER_OUT" | grep -q "KEY=feature_isolated_key_123"; then
+    echo "❌ drush command wrapper did not source feature-env-test/.env! Output:"
+    echo "$DRUSH_WRAPPER_OUT"
+    exit 1
+fi
+
+# Clean up test worktree
+"$GAR_BIN" remove -f feature-env-test
+rm -f "$HUB_DIR/develop/.env"
+
+echo "✅ Worktree .env Isolation, Seeding, and Runtime Evaluation passed!"
 
 echo ""
 echo "🎉 All tests passed successfully!"

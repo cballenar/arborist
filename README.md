@@ -262,6 +262,16 @@ POST_PROVISION_CMD="ddev drush updb -y && ddev drush cim -y && ddev drush cr && 
 * `POST_PROVISION_CMD` specifies commands executed inside the worktree directory when a new branch is created or checked out from remote (e.g. `updb` → `cim` → `cr` → `uli`). If any command fails, remaining commands abort immediately so the developer can inspect and resolve the issue.
 
 
+### Environment Variables (`.env`)
+
+Arborist supports branch-isolated environment configurations per worktree (`<worktree>/.env` and `<worktree>/.env.local`):
+
+* **Runtime Evaluation (No `ddev restart`):** Evaluated dynamically at request/execution time by PHP (`settings.workspace.php`) for both web requests (via Nginx/PHP-FPM) and CLI commands (`ddev drush`). Edits to `.env` take effect immediately without slow container restarts.
+* **CLI Wrapper Auto-sourcing:** Arborist's custom DDEV wrappers (`ddev drush`, `ddev npm`) automatically `source` the active worktree's `.env` and `.env.local` into the subshell before execution.
+* **Automated Seeding:** When switching to or creating a new branch (`gar switch -c`), Arborist automatically seeds `.env` from your baseline tracking branch (`develop` / `main`), or falls back to `.env.example`.
+* **Git Cleanliness:** Both `.env` and `.env.local` are automatically registered in `.git/info/exclude`, ensuring worktrees stay untracked and clean.
+
+
 ## Development & Testing
 
 Arborist includes an end-to-end (E2E) Bash test suite verifying bare clone initialization, sparse-checkouts, directory switching, moves, and database mock calls:

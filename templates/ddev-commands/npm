@@ -5,6 +5,28 @@
 ## ExecRaw: true
 ## HostWorkingDir: true
 
+# Source worktree .env environment variables if present
+SEARCH_ENV="$PWD"
+while [ "$SEARCH_ENV" != "/var/www" ] && [ "$SEARCH_ENV" != "/" ]; do
+  if [ -f "$SEARCH_ENV/.env" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$SEARCH_ENV/.env"
+    set +a
+    if [ -f "$SEARCH_ENV/.env.local" ]; then
+      set -a
+      # shellcheck disable=SC1090
+      . "$SEARCH_ENV/.env.local"
+      set +a
+    fi
+    break
+  fi
+  if [ "$SEARCH_ENV" = "/var/www/html" ]; then
+    break
+  fi
+  SEARCH_ENV=$(dirname "$SEARCH_ENV")
+done
+
 # 1. If current directory already has package.json, run directly
 if [ -f "./package.json" ]; then
   exec npm "$@"
