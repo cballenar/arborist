@@ -38,15 +38,19 @@ Arborist replaces branch hopping with a persistent **Hub-and-Spoke** model:
 
 ## Installation
 
-Because operating systems prevent child CLI processes from changing the working directory of the parent terminal, Arborist requires a lightweight shell hook to natively `cd` you into newly provisioned or moved worktrees.
+Arborist supports both interactive developer terminals (with automatic `cd` into worktrees) and non-interactive environments (AI agents, automation scripts, CI/CD).
 
 ```bash
 ./install.sh
 source ~/.zshrc   # or ~/.bashrc
 ```
 
+`./install.sh` automatically configures both:
+1. **Standalone executable symlinks** in your standard `$PATH` (`/opt/homebrew/bin`, `/usr/local/bin`, or `~/.local/bin`), so AI agents, background subshells, and scripts can call `gar` directly without needing `.zshrc`.
+2. **Interactive shell hook** in your shell profile (`~/.zshrc` or `~/.bashrc`) so that human developer commands automatically `cd` into newly switched or moved worktrees with full tab autocompletion.
+
 * To re-install or update without confirmation prompt: `./install.sh -f`
-* To remove the shell integration: `./install.sh --uninstall`
+* To remove the shell integration and standalone symlinks: `./install.sh --uninstall`
 
 ### Manual Installation
 If you would rather install this manually:

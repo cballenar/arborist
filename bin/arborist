@@ -3,6 +3,17 @@
 
 set -e
 
+# Resolve symlinks to find the real script path and root directory
+PRG="${BASH_SOURCE[0]}"
+while [ -L "$PRG" ]; do
+    PRG_DIR="$(cd -P "$(dirname "$PRG")" >/dev/null 2>&1 && pwd)"
+    PRG="$(readlink "$PRG")"
+    [[ "$PRG" != /* ]] && PRG="$PRG_DIR/$PRG"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$PRG")" >/dev/null 2>&1 && pwd)"
+BIN_PATH="$SCRIPT_DIR/$(basename "$PRG")"
+TEMPLATES_DIR="$(dirname "$SCRIPT_DIR")/templates"
+
 COMMAND=${1:-}
 INVOCATION_DIR="$PWD"
 
@@ -16,7 +27,7 @@ Usage:
 
 Commands:
   init <repo_url> <dir>    Initialize a new Hub and provision baseline worktree
-  switch [-c] [branch]     Switch to a worktree, checkout remote, or create (-c) a new one
+  switch [-c] [options] [b] Switch to worktree, or checkout/create (-c) (--clone|--backup)
   list                     List all worktrees, branches, and database mappings
   info                     Show engine, current branch, DB name, and site URL
   prune [options]          Prune orphaned worktrees, branches, and databases (-f, --dry-run)
@@ -84,7 +95,7 @@ fi
 
 # Handle 'hook' command before stdout redirection so eval "$(gar hook)" captures the shell definition
 if [ "$COMMAND" = "hook" ]; then
-    BIN_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+    BIN_PATH="$SCRIPT_DIR/arborist"
     cat << EOF
 # Git Arborist (gar) shell integration
 gar() {
@@ -205,9 +216,6 @@ if [ -n "$COMMAND" ]; then
     shift
 fi
 
-# Where this script is located so we can find templates/
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-TEMPLATES_DIR=$(dirname "$SCRIPT_DIR")/templates
 
 function log() {
     echo -e "$@"
@@ -691,6 +699,10 @@ function cmd_switch() {
                 CREATE_FLAG=1
                 shift
                 ;;
+            -y|--yes)
+                AUTO_YES=true
+                shift
+                ;;
             --clone)
                 STRATEGY_OVERRIDE="clone"
                 shift
@@ -700,7 +712,7 @@ function cmd_switch() {
                 shift
                 ;;
             -*)
-                error_exit "Unknown option for switch: $1\nUsage: gar switch [-c] [--clone|--backup] [branch]"
+                error_exit "Unknown option for switch: $1\nUsage: gar switch [-c] [-y|--yes] [--clone|--backup] [branch]"
                 ;;
             *)
                 if [ -z "$BRANCH" ]; then
@@ -839,7 +851,7 @@ function cmd_switch() {
         git worktree add "$wt_dir_name" --track -b "$BRANCH" "origin/$BRANCH"
     else
         # Branch not found locally or remotely, and -c was not specified
-        if [ "$GAR_AUTO_YES" != "true" ] && [ -t 0 ]; then
+        if [ "$GAR_AUTO_YES" != "true" ] && [ "$AUTO_YES" != "true" ] && [ -t 0 ]; then
             read -p "Branch '$BRANCH' not found locally or on remote. Create it now? [Y/n]: " create_confirm </dev/tty || create_confirm=Y
             create_confirm=${create_confirm:-Y}
             if [[ "$create_confirm" =~ ^[Yy]$ ]]; then
@@ -849,7 +861,7 @@ function cmd_switch() {
                 log "Switch cancelled."
                 exit 0
             fi
-        elif [ "$GAR_AUTO_YES" == "true" ]; then
+        elif [ "$GAR_AUTO_YES" == "true" ] || [ "$AUTO_YES" == "true" ]; then
             log "Creating new worktree and branch for '$BRANCH'..."
             git worktree add "$wt_dir_name" -b "$BRANCH"
         else
@@ -886,9 +898,11 @@ function cmd_switch() {
     if [ "$db_exists" = true ]; then
         log "Found existing isolated database '$DB_NAME'. Using it."
     else
-        if [ "$GAR_AUTO_YES" == "true" ]; then
+        if [ "$GAR_AUTO_YES" == "true" ] || [ "$AUTO_YES" == "true" ] || [ ! -t 0 ]; then
             create_db="y"
-            log "Auto-confirming database creation for tests."
+            if [ "$GAR_AUTO_YES" == "true" ]; then
+                log "Auto-confirming database creation for tests."
+            fi
         else
             read -p "Create an isolated database for this branch? [Y/n]: " create_db </dev/tty || true
         fi

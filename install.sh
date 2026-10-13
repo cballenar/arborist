@@ -52,18 +52,43 @@ fi
 
 DISPLAY_PROFILE="${PROFILE/#$HOME/~}"
 
+# Detect standard PATH directory for standalone executable (agents, scripts, subshells)
+CANDIDATE_DIRS=("/opt/homebrew/bin" "/usr/local/bin" "$HOME/.local/bin")
+STANDALONE_DIR=""
+for d in "${CANDIDATE_DIRS[@]}"; do
+    if [ -d "$d" ] && [ -w "$d" ]; then
+        STANDALONE_DIR="$d"
+        break
+    fi
+done
+
+if [ -z "$STANDALONE_DIR" ]; then
+    mkdir -p "$HOME/.local/bin" 2>/dev/null || true
+    if [ -d "$HOME/.local/bin" ] && [ -w "$HOME/.local/bin" ]; then
+        STANDALONE_DIR="$HOME/.local/bin"
+    fi
+fi
+
 if [ "$UNINSTALL" = true ]; then
     echo "🌳 Git Arborist Shell Integration"
     echo "Target profile: $DISPLAY_PROFILE"
     echo ""
+    for d in "${CANDIDATE_DIRS[@]}"; do
+        if [ -L "$d/gar" ] || [ -f "$d/gar" ]; then
+            rm -f "$d/gar"
+        fi
+        if [ -L "$d/arborist" ] || [ -f "$d/arborist" ]; then
+            rm -f "$d/arborist"
+        fi
+    done
     if [ -f "$PROFILE" ] && grep -q "arborist.*hook\|gar.*hook\|wrapper\.sh" "$PROFILE" 2>/dev/null; then
         sed -i.bak '/# Git Arborist/d; /arborist.*hook/d; /gar.*hook/d; /wrapper\.sh/d' "$PROFILE" && rm -f "$PROFILE.bak"
-        echo "Successfully removed from $DISPLAY_PROFILE!"
+        echo "Successfully removed from $DISPLAY_PROFILE and PATH!"
         echo ""
         echo "To apply changes immediately, run:"
         echo "  source $DISPLAY_PROFILE"
     else
-        echo "Git Arborist integration not found in $DISPLAY_PROFILE."
+        echo "Git Arborist integration removed."
     fi
     exit 0
 fi
@@ -98,6 +123,15 @@ else
     echo "# Git Arborist" >> "$PROFILE"
     echo "$HOOK_LINE" >> "$PROFILE"
     echo "Successfully appended to $DISPLAY_PROFILE!"
+fi
+
+if [ -n "$STANDALONE_DIR" ]; then
+    ln -sf "$BIN_PATH" "$STANDALONE_DIR/gar"
+    ln -sf "$BIN_PATH" "$STANDALONE_DIR/arborist"
+    echo ""
+    echo "Installed standalone binary symlinks in $STANDALONE_DIR (for agents, scripts, and subshells):"
+    echo "  $STANDALONE_DIR/gar -> $BIN_PATH"
+    echo "  $STANDALONE_DIR/arborist -> $BIN_PATH"
 fi
 
 echo ""

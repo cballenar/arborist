@@ -103,6 +103,8 @@ EOF
 chmod +x "$TEST_DIR/bin/drush"
 chmod +x "$TEST_DIR/bin/ddev"
 echo "db" > "$TEST_DIR/mock-dbs.txt"
+ln -sf "$GAR_BIN" "$TEST_DIR/bin/gar"
+ln -sf "$GAR_BIN" "$TEST_DIR/bin/arborist"
 
 # Setup auto-confirm for interactive prompts
 export GAR_AUTO_YES=true
@@ -324,6 +326,13 @@ if ! grep -q "export-db --gzip=false --database=db" "$TEST_DIR/ddev.log"; then
 fi
 if ! grep -q "import-db --database=db_feature_clone_test" "$TEST_DIR/ddev.log"; then
     echo "❌ DB switch --clone failed: did not import into db_feature_clone_test"
+    exit 1
+fi
+
+# 8.7 Test: Standalone PATH binary invocation with -y (agent simulation)
+GAR_AUTO_YES=false gar switch -c -y feature-agent-test 3>/dev/null
+if ! grep -q "import-db --database=db_feature_agent_test" "$TEST_DIR/ddev.log"; then
+    echo "❌ Standalone PATH binary gar switch -c -y failed"
     exit 1
 fi
 
