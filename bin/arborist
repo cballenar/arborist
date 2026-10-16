@@ -33,15 +33,16 @@ Commands:
   prune [options]          Prune orphaned worktrees, branches, and databases (-f, --dry-run)
   -m [old_branch] <new>    Move/rename a worktree, branch, and database
   remove [options] <branch> Remove a worktree, branch, and drop isolated database (-f, -y)
-  db <action> [options]    Database operations (import/export) (aliases: dbi, dbe)
+  db <action> [options]    Database operations (import/export/provision) (aliases: dbi, dbe, dbp)
   sync                     Synchronize Hub configs, wrappers, hooks, and worktree scaffolds
   install-hooks            Install Git hooks in the Hub for automatic pruning
   hook                     Output shell integration hook for eval
   -h, --help, help         Show this help message
 
 Database Commands:
-  db import [--file <f>] [--target <b>]   Import SQL dump into database (alias: dbi)
-  db export [--file <f>] [--target <b>]   Export database to SQL dump (alias: dbe)
+  db import [--file <f>] [--target <b>]                         Import SQL dump into database (alias: dbi)
+  db export [--file <f>] [--target <b>]                         Export database to SQL dump (alias: dbe)
+  db provision [--clone|--backup] [--file <f>] [--target <b>]   Provision DB and run post-provision commands (alias: dbp)
 
 Examples:
   gar init git@github.com:org/repo.git my-project
@@ -52,6 +53,7 @@ Examples:
   gar db import
   gar dbi --file custom.sql.gz
   gar dbe --target feature-branch
+  gar dbp --target feature-branch
 EOF
     exit 0
 fi
@@ -116,6 +118,7 @@ gar() {
 alias arborist="gar"
 alias dbi="gar dbi"
 alias dbe="gar dbe"
+alias dbp="gar dbp"
 
 # Shell completion for Zsh and Bash
 if [ -n "\$ZSH_VERSION" ]; then
@@ -128,9 +131,10 @@ if [ -n "\$ZSH_VERSION" ]; then
             'info:Show engine, current branch, DB name, and site URL'
             'prune:Prune orphaned worktrees, branches, and databases'
             'remove:Remove a worktree, branch, and database'
-            'db:Database operations (import/export)'
+            'db:Database operations (import/export/provision)'
             'dbi:Import database dump'
             'dbe:Export database dump'
+            'dbp:Provision isolated database and run post-provision commands'
             'sync:Synchronize Hub configs, wrappers, and scaffolds'
             'sync-ddev:Synchronize Hub configs, wrappers, and scaffolds'
             'install-hooks:Install Git hooks in the Hub'
@@ -139,6 +143,15 @@ if [ -n "\$ZSH_VERSION" ]; then
 
         if (( CURRENT == 2 )); then
             _describe -t commands 'gar command' commands
+            return 0
+        fi
+
+        if [ "\$words[CURRENT-1]" = "--target" ]; then
+            local -a branches
+            branches=(\$( "$BIN_PATH" __complete branches 2>/dev/null ))
+            if (( \${#branches} > 0 )); then
+                _describe -t branches 'branch' branches
+            fi
             return 0
         fi
 
@@ -153,7 +166,7 @@ if [ -n "\$ZSH_VERSION" ]; then
             db)
                 if (( CURRENT == 3 )); then
                     local -a dbcmds
-                    dbcmds=('import:Import SQL dump' 'export:Export database')
+                    dbcmds=('import:Import SQL dump' 'export:Export database' 'provision:Provision database and run post-provision commands')
                     _describe -t dbcmds 'db command' dbcmds
                 fi
                 ;;
@@ -172,7 +185,7 @@ elif [ -n "\$BASH_VERSION" ]; then
         cur="\${COMP_WORDS[COMP_CWORD]}"
         prev="\${COMP_WORDS[COMP_CWORD-1]}"
 
-        local commands="init switch list info prune remove db dbi dbe sync sync-ddev install-hooks -m -h help"
+        local commands="init switch list info prune remove db dbi dbe dbp sync sync-ddev install-hooks -m -h help"
 
         if [ "\$COMP_CWORD" -eq 1 ]; then
             COMPREPLY=( \$(compgen -W "\$commands" -- "\$cur") )
@@ -187,7 +200,7 @@ elif [ -n "\$BASH_VERSION" ]; then
                 return 0
                 ;;
             db)
-                COMPREPLY=( \$(compgen -W "import export info" -- "\$cur") )
+                COMPREPLY=( \$(compgen -W "import export provision info" -- "\$cur") )
                 return 0
                 ;;
             prune)
@@ -990,20 +1003,29 @@ function cmd_switch() {
         db_exists=true
     fi
 
+    local run_post_provision=false
     if [ "$db_exists" = true ]; then
         log "Found existing isolated database '$DB_NAME'. Using it."
+        run_post_provision=true
     else
-        if [ "$GAR_AUTO_YES" == "true" ] || [ "$AUTO_YES" == "true" ] || [ ! -t 0 ]; then
+        local create_db="n"
+        if [ "$GAR_AUTO_YES" == "true" ] || [ "$AUTO_YES" == "true" ] || [ -n "$STRATEGY_OVERRIDE" ]; then
             create_db="y"
             if [ "$GAR_AUTO_YES" == "true" ]; then
                 log "Auto-confirming database creation for tests."
             fi
-        else
-            read -p "Create an isolated database for this branch? [Y/n]: " create_db </dev/tty || true
+        elif [ -t 0 ]; then
+            local prompt_timeout="${GAR_DB_PROMPT_TIMEOUT:-10}"
+            if ! read -t "$prompt_timeout" -p "Create an isolated database for this branch? (${prompt_timeout}s timeout) [y/N]: " create_db </dev/tty; then
+                echo "" >&2
+                log "No response within ${prompt_timeout}s; defaulting to No."
+                create_db="n"
+            fi
         fi
-        create_db=${create_db:-Y}
+        create_db=${create_db:-N}
 
         if [[ "$create_db" =~ ^[Yy]$ ]]; then
+            run_post_provision=true
             if [ "$ENV_ENGINE" == "ddev" ]; then
                 ddev mysql -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`;" || true
                 local provision_strategy="${STRATEGY_OVERRIDE:-${DB_PROVISION_STRATEGY:-backup}}"
@@ -1029,12 +1051,12 @@ function cmd_switch() {
                 log "Automated database cloning for $ENV_ENGINE is not yet implemented."
             fi
         else
-            log "Using default shared database."
+            log "Using default shared database. Run 'gar db provision' (or 'gar dbp') anytime to provision an isolated database."
         fi
     fi
 
-    # Run post-provision commands on new worktree if configured
-    if [ -n "$POST_PROVISION_CMD" ]; then
+    # Run post-provision commands on new worktree if configured and isolated DB is active
+    if [ "$run_post_provision" = true ] && [ -n "$POST_PROVISION_CMD" ]; then
         flush_env_sync
         log "Running post-provision commands in '$wt_dir_name'..."
         (
@@ -2096,14 +2118,19 @@ Usage:
   gar db <action> [options]
   gar dbi [options]
   gar dbe [options]
+  gar dbp [options]
 
 Actions:
-  import [--file <path>] [--target <branch>]   Import SQL dump into database (alias: gar dbi)
-  export [--file <path>] [--target <branch>]   Export database to SQL dump (alias: gar dbe)
+  import [--file <path>] [--target <branch>]                          Import SQL dump into database (alias: gar dbi)
+  export [--file <path>] [--target <branch>]                          Export database to SQL dump (alias: gar dbe)
+  provision [--clone|--backup] [--file <path>] [--target <branch>]    Provision database and run post-provision commands (alias: gar dbp)
 
 Options:
   --file <path>       Path to SQL dump (relative to current directory)
   --target <branch>   Target branch/database (defaults to current worktree or tracking branch)
+  --clone             Clone running default database (db) instead of importing backup
+  --backup            Import latest backup dump from DB_BACKUP_PATH
+  --skip-db           Skip database import/clone and only run post-provision commands
 EOF
         exit 0
     fi
@@ -2111,6 +2138,8 @@ EOF
 
     FILE_ARG=""
     TARGET_ARG=""
+    STRATEGY_OVERRIDE=""
+    SKIP_DB=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -2128,6 +2157,18 @@ EOF
                 ;;
             --target=*)
                 TARGET_ARG="${1#*=}"
+                shift
+                ;;
+            --clone)
+                STRATEGY_OVERRIDE="clone"
+                shift
+                ;;
+            --backup)
+                STRATEGY_OVERRIDE="backup"
+                shift
+                ;;
+            --skip-db)
+                SKIP_DB=true
                 shift
                 ;;
             -h|--help|help)
@@ -2154,6 +2195,19 @@ Options:
   --target <branch>   Target branch/database to export (defaults to current worktree or tracking branch).
 EOF
                         ;;
+                    provision)
+                        cat << 'EOF'
+Usage: gar db provision [--clone|--backup] [--file <path>] [--target <branch>] [--skip-db]
+Alias: gar dbp [--clone|--backup] [--file <path>] [--target <branch>] [--skip-db]
+
+Options:
+  --clone             Clone the running default database (db) into the target database.
+  --backup            Import the latest dump from DB_BACKUP_PATH into the target database.
+  --file <path>       Import a specific SQL dump (relative to current working directory).
+  --target <branch>   Target branch/worktree (defaults to current worktree or tracking branch).
+  --skip-db           Skip database import/clone and only execute post-provision commands.
+EOF
+                        ;;
                     *)
                         echo "Unknown action: $ACTION"
                         ;;
@@ -2175,6 +2229,8 @@ EOF
     source "$HUB_DIR/.arborist" 2>/dev/null || true
     ENV_ENGINE=${ENV_ENGINE:-ddev}
     DB_BACKUP_PATH=${DB_BACKUP_PATH:-backups}
+    DB_PROVISION_STRATEGY=${DB_PROVISION_STRATEGY:-backup}
+    FRAMEWORK=${FRAMEWORK:-drupal}
 
     # Tracking / default branch detection
     if [ -z "$DEFAULT_BRANCH" ]; then
@@ -2188,10 +2244,12 @@ EOF
 
     # Current worktree detection based on where command was invoked
     CURRENT_BRANCH=""
+    local CURRENT_WT_TOP=""
     if [ "$INVOCATION_DIR" != "$HUB_DIR" ] && [[ "$INVOCATION_DIR" == "$HUB_DIR/"* ]]; then
         local wt_top
         wt_top=$(git -C "$INVOCATION_DIR" rev-parse --show-toplevel 2>/dev/null || true)
         if [ -n "$wt_top" ] && [ "$wt_top" != "$HUB_DIR" ]; then
+            CURRENT_WT_TOP="$wt_top"
             local b
             b=$(git -C "$wt_top" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
             if [ -n "$b" ] && [ "$b" != "HEAD" ]; then
@@ -2298,6 +2356,135 @@ EOF
             fi
             ;;
 
+        provision)
+            # Resolve target worktree directory
+            local TARGET_WT_PATH=""
+            local target_wt_dir
+            target_wt_dir=$(get_wt_dir_name "$TARGET_BRANCH")
+            if [ -z "$TARGET_ARG" ] && [ -n "$CURRENT_WT_TOP" ] && [ -d "$CURRENT_WT_TOP" ]; then
+                local cur_rel="${CURRENT_WT_TOP##*/}"
+                if [ -d "$HUB_DIR/$cur_rel" ]; then
+                    TARGET_WT_PATH="$HUB_DIR/$cur_rel"
+                else
+                    TARGET_WT_PATH="$CURRENT_WT_TOP"
+                fi
+            elif [ -d "$HUB_DIR/$target_wt_dir" ]; then
+                TARGET_WT_PATH="$HUB_DIR/$target_wt_dir"
+            elif [ -d "$HUB_DIR/$TARGET_BRANCH" ]; then
+                TARGET_WT_PATH="$HUB_DIR/$TARGET_BRANCH"
+            else
+                local cur_parse_wt=""
+                while IFS= read -r line; do
+                    if [[ "$line" =~ ^worktree[[:space:]]+(.*) ]]; then
+                        cur_parse_wt="${BASH_REMATCH[1]}"
+                    elif [[ "$line" =~ ^branch[[:space:]]+refs/heads/(.*) ]]; then
+                        local parsed_branch="${BASH_REMATCH[1]}"
+                        local parsed_dir_name
+                        parsed_dir_name=$(get_wt_dir_name "$parsed_branch")
+                        local norm_parsed=$(echo "$parsed_branch" | tr '[:upper:]' '[:lower:]')
+                        if [ "$parsed_branch" = "$TARGET_BRANCH" ] || [ "$parsed_dir_name" = "$TARGET_BRANCH" ] || [ "$norm_parsed" = "$norm_target_b" ] || [ "$parsed_dir_name" = "$target_wt_dir" ]; then
+                            local rel_p="${cur_parse_wt##*/}"
+                            if [ -d "$HUB_DIR/$rel_p" ]; then
+                                TARGET_WT_PATH="$HUB_DIR/$rel_p"
+                            else
+                                TARGET_WT_PATH="$cur_parse_wt"
+                            fi
+                            TARGET_BRANCH="$parsed_branch"
+                            break
+                        fi
+                    fi
+                done < <(git -C "$HUB_DIR" worktree list --porcelain 2>/dev/null)
+            fi
+
+            if [ -z "$TARGET_WT_PATH" ] || [ ! -d "$TARGET_WT_PATH" ]; then
+                error_exit "Worktree for branch '$TARGET_BRANCH' not found in $HUB_DIR."
+            fi
+
+            # Recompute TARGET_DB in case TARGET_BRANCH was resolved from worktree list
+            norm_target_b=$(echo "$TARGET_BRANCH" | tr '[:upper:]' '[:lower:]')
+            if [ "$norm_target_b" == "$norm_def_b" ] || [ "$norm_target_b" == "db" ] || [ "$norm_target_b" == "default" ]; then
+                TARGET_DB="db"
+            else
+                TARGET_DB=$(get_db_name "$TARGET_BRANCH")
+            fi
+
+            # 1. Database instantiation (unless --skip-db)
+            if [ "$SKIP_DB" = false ]; then
+                if [ "$ENV_ENGINE" == "ddev" ]; then
+                    cd "$HUB_DIR"
+                    if [ "$TARGET_DB" != "db" ]; then
+                        ddev mysql -e "CREATE DATABASE IF NOT EXISTS \`$TARGET_DB\`;" || true
+                    fi
+
+                    if [ -n "$FILE_ARG" ]; then
+                        RESOLVED_FILE=""
+                        if [[ "$FILE_ARG" = /* ]]; then
+                            RESOLVED_FILE="$FILE_ARG"
+                        else
+                            RESOLVED_FILE="$INVOCATION_DIR/$FILE_ARG"
+                        fi
+                        if [ -d "$(dirname "$RESOLVED_FILE")" ]; then
+                            RESOLVED_FILE="$(cd "$(dirname "$RESOLVED_FILE")" && pwd)/$(basename "$RESOLVED_FILE")"
+                        fi
+                        if [ ! -f "$RESOLVED_FILE" ]; then
+                            error_exit "Specified database dump file not found: $RESOLVED_FILE"
+                        fi
+                        log "Importing database dump into '\033[36m$TARGET_DB\033[0m'..."
+                        log "Source file: $RESOLVED_FILE"
+                        ddev import-db --database="$TARGET_DB" --file="$RESOLVED_FILE"
+                        log "Database '\033[32m$TARGET_DB\033[0m' ready."
+                    else
+                        local provision_strategy="${STRATEGY_OVERRIDE:-${DB_PROVISION_STRATEGY:-backup}}"
+                        if [ "$provision_strategy" == "clone" ]; then
+                            if [ "$TARGET_DB" == "db" ]; then
+                                log "Target is default database 'db'; skipping self-clone."
+                            else
+                                log "Cloning default database into '\033[36m$TARGET_DB\033[0m'..."
+                                ddev export-db --gzip=false --database=db | ddev import-db --database="$TARGET_DB"
+                                log "Isolated database '\033[32m$TARGET_DB\033[0m' ready."
+                            fi
+                        else
+                            local backup_file=""
+                            backup_file=$(get_latest_backup_file "$DB_BACKUP_PATH" 2>/dev/null) || true
+                            if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
+                                log "Importing backup dump into '\033[36m$TARGET_DB\033[0m'..."
+                                log "Source: $backup_file"
+                                ddev import-db --database="$TARGET_DB" --file="$backup_file"
+                                log "Isolated database '\033[32m$TARGET_DB\033[0m' ready."
+                            elif [ "$TARGET_DB" != "db" ]; then
+                                log "No database backup dump found in '${DB_BACKUP_PATH:-backups}'. Falling back to cloning default database..."
+                                ddev export-db --gzip=false --database=db | ddev import-db --database="$TARGET_DB"
+                                log "Isolated database '\033[32m$TARGET_DB\033[0m' ready."
+                            else
+                                error_exit "No database dump files found in directory: ${DB_BACKUP_PATH:-backups}"
+                            fi
+                        fi
+                    fi
+                else
+                    error_exit "Database provisioning for engine '$ENV_ENGINE' is not yet implemented."
+                fi
+            fi
+
+            # 2. Run post-provision commands in the target worktree
+            local post_cmd="$POST_PROVISION_CMD"
+            if [ -z "$post_cmd" ] && [ "$FRAMEWORK" == "drupal" ]; then
+                post_cmd="ddev drush updb -y && ddev drush cim -y && ddev drush cr && ddev drush uli"
+            fi
+
+            if [ -n "$post_cmd" ]; then
+                flush_env_sync
+                local wt_rel_name="${TARGET_WT_PATH##*/}"
+                log "Running post-provision commands in '$wt_rel_name'..."
+                (
+                    set -e
+                    cd "$TARGET_WT_PATH"
+                    eval "$post_cmd"
+                ) || {
+                    error_exit "Post-provision command failed with exit code $?. Aborted remaining commands."
+                }
+            fi
+            log "Provisioning complete for '$TARGET_BRANCH' ($TARGET_DB)."
+            ;;
 
         *)
             error_exit "Unknown database action: $ACTION\nRun 'gar db' to see available actions."
@@ -2341,6 +2528,9 @@ case "$COMMAND" in
         ;;
     dbe)
         cmd_db export "$@"
+        ;;
+    dbp)
+        cmd_db provision "$@"
         ;;
     *)
         error_exit "Unknown command: $COMMAND\nRun 'gar -h' to see available commands."

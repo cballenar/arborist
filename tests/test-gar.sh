@@ -336,6 +336,54 @@ if ! grep -q "import-db --database=db_feature_agent_test" "$TEST_DIR/ddev.log"; 
     exit 1
 fi
 
+# 8.8 Test: Switch defaults to No (skips isolated DB and POST_PROVISION_CMD) when unforced
+SKIP_DB_OUT=$(GAR_AUTO_YES=false GAR_DB_PROMPT_TIMEOUT=1 "$GAR_BIN" switch -c feature-skip-db </dev/null 2>&1 3>/dev/null)
+if grep -q "import-db --database=db_feature_skip_db" "$TEST_DIR/ddev.log"; then
+    echo "❌ Switch default-No failed: db_feature_skip_db should not have been created without -y/--clone/--backup"
+    exit 1
+fi
+if echo "$SKIP_DB_OUT" | grep -q "Running post-provision commands"; then
+    echo "❌ Switch default-No failed: POST_PROVISION_CMD should be skipped when isolated DB creation is skipped"
+    exit 1
+fi
+if ! echo "$SKIP_DB_OUT" | grep -q "gar db provision"; then
+    echo "❌ Switch default-No failed: did not output 'gar db provision' hint"
+    exit 1
+fi
+
+# 8.9 Test: 'gar dbp' / 'gar db provision' instantiates isolated DB and runs POST_PROVISION_CMD
+cd "$HUB_DIR/feature-skip-db"
+DBP_OUT=$("$GAR_BIN" dbp 2>&1)
+if ! grep -q "import-db --database=db_feature_skip_db --file=$HUB_DIR/backups/dump_latest.sql.gz" "$TEST_DIR/ddev.log"; then
+    echo "❌ gar dbp failed: did not import backup into db_feature_skip_db"
+    exit 1
+fi
+if ! echo "$DBP_OUT" | grep -q "Running post-provision commands in 'feature-skip-db'..."; then
+    echo "❌ gar dbp failed: did not execute POST_PROVISION_CMD"
+    exit 1
+fi
+
+# Test 'gar dbp --skip-db' (runs POST_PROVISION_CMD without re-importing DB)
+SKIP_FLAG_OUT=$("$GAR_BIN" db provision --skip-db 2>&1)
+if echo "$SKIP_FLAG_OUT" | grep -q "Importing backup dump"; then
+    echo "❌ gar db provision --skip-db failed: should not import database"
+    exit 1
+fi
+if ! echo "$SKIP_FLAG_OUT" | grep -q "Running post-provision commands in 'feature-skip-db'..."; then
+    echo "❌ gar db provision --skip-db failed: did not execute POST_PROVISION_CMD"
+    exit 1
+fi
+
+# Test 'gar dbp --target <branch>' from Hub root
+cd "$HUB_DIR"
+TARGET_FLAG_OUT=$("$GAR_BIN" dbp --target feature-skip-db 2>&1)
+if ! echo "$TARGET_FLAG_OUT" | grep -q "Running post-provision commands in 'feature-skip-db'..."; then
+    echo "❌ gar dbp --target failed: did not target feature-skip-db from hub root"
+    exit 1
+fi
+
+"$GAR_BIN" remove -f feature-skip-db
+
 echo "✅ DB commands passed!"
 
 # 9. Test: List and Prune commands with Git hooks

@@ -71,9 +71,9 @@ You can run `/path/to/arborist/bin/arborist hook` in your terminal anytime to in
 ### Tab Autocompletion
 
 Arborist includes built-in tab autocompletion for both **Zsh** and **Bash**. When shell integration is enabled via `./install.sh` or `eval "$(gar hook)"`, hitting `<Tab>` automatically completes:
-* Subcommands (`switch`, `list`, `prune`, `remove`, `db`, `dbi`, `dbe`, `-m`, etc.)
+* Subcommands (`switch`, `list`, `prune`, `remove`, `db`, `dbi`, `dbe`, `dbp`, `-m`, etc.)
 * Active worktrees and Git branches for `switch`, `remove`, and `-m`
-* Database subcommands (`import`, `export`, `info`) and `--target` branch completion
+* Database subcommands (`import`, `export`, `provision`, `info`) and `--target` branch completion
 * Flags for commands such as `prune` (`-f`, `--force`, `--dry-run`) and `remove` (`-f`, `--force`)
 
 
@@ -108,16 +108,18 @@ gar switch feature-branch
 
 Arborist includes built-in switch ergonomics:
 * **No-argument switch:** Running `gar switch` with no arguments automatically returns to your baseline tracking branch (`develop` / `main`), or displays an interactive worktree selector.
-* **Remote branch auto-checkout:** Running `gar switch <branch>` for a branch that exists on the remote (`origin/<branch>`) automatically provisions a local tracking worktree without requiring `-c`.
+* **Remote branch auto-checkout:** Running `gar switch <branch>` for a branch that exists on the remote (`origin/<branch>`) automatically provisions a local tracking worktree (fetching from `origin` if not yet cached locally) without requiring `-c`.
 * **Smart branch creation prompt:** If you enter a new branch name without `-c`, Arborist asks if you'd like to create it now instead of failing.
 
 Provision and switch to an explicit brand-new feature branch:
 ```bash
 gar switch -c new-feature
+# Force isolated DB creation from backup without prompting:
+gar switch -c -y new-feature
 # Or force a live DB clone instead of importing the latest backup:
 gar switch -c --clone new-feature
 ```
-*Prompts if you would like an isolated database (`db_new-feature`) initialized from the latest backup in `DB_BACKUP_PATH` (or cloned from the running DB if `--clone` is specified or `DB_PROVISION_STRATEGY="clone"` is set).*
+*Prompts with a 10-second timeout defaulting to **No** (`[y/N]`) before creating an isolated database (`db_new_feature`), or provisions immediately without prompting when `-y`/`--yes`, `--backup`, or `--clone` is passed. If skipped, you can run `gar db provision` (`gar dbp`) at any time.*
 
 
 ### Move/Rename Worktree (`gar -m`)
@@ -212,12 +214,25 @@ gar sync-ddev
 ```
 
 
-### Database Management (`gar db`, `gar dbi`, `gar dbe`)
+### Database Management (`gar db`, `gar dbi`, `gar dbe`, `gar dbp`)
 
-Arborist provides dedicated commands to manually import, export, and inspect databases across worktrees:
+Arborist provides dedicated commands to manually import, export, and provision databases across worktrees:
 
 ```bash
-# Import the latest dump from DB_BACKUP_PATH into current branch (or default db)
+# Provision current branch database (import backup or clone) AND run POST_PROVISION_CMD (updb, cim, cr, uli)
+gar db provision
+gar dbp
+
+# Provision using live clone from default db instead of backup
+gar dbp --clone
+
+# Run only post-provision commands (updb, cim, cr, uli) without re-importing database
+gar dbp --skip-db
+
+# Provision a specific branch from anywhere in the Hub
+gar dbp --target feature-branch
+
+# Import the latest dump from DB_BACKUP_PATH into current branch (without running POST_PROVISION_CMD)
 gar db import
 gar dbi
 
@@ -235,7 +250,6 @@ gar dbe
 
 # Export with custom destination file
 gar dbe --file ../backups/my_backup.sql.gz
-
 ```
 
 #### Project Configuration (`.arborist`)
