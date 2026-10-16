@@ -456,6 +456,20 @@ if [ "$REMOTE_TARGET" != "$HUB_DIR/feature-from-remote" ] || [ ! -d "$HUB_DIR/fe
     exit 1
 fi
 
+# 10.2b Test: 'gar switch' unfetched remote branch without prior manual fetch
+git -C "$REMOTE_REPO" branch feature-unfetched-remote develop
+UNFETCHED_TARGET=$("$GAR_BIN" switch feature-unfetched-remote)
+if [ "$UNFETCHED_TARGET" != "$HUB_DIR/feature-unfetched-remote" ] || [ ! -d "$HUB_DIR/feature-unfetched-remote" ]; then
+    echo "❌ gar switch unfetched remote branch failed: worktree not created"
+    exit 1
+fi
+UNFETCHED_UPSTREAM=$(git -C "$HUB_DIR/feature-unfetched-remote" rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || true)
+if [ "$UNFETCHED_UPSTREAM" != "origin/feature-unfetched-remote" ]; then
+    echo "❌ gar switch unfetched remote branch failed: expected upstream 'origin/feature-unfetched-remote', got '$UNFETCHED_UPSTREAM'"
+    exit 1
+fi
+"$GAR_BIN" remove -f feature-unfetched-remote
+
 # 10.3 Test: 'gar remove -f' (removes worktree and drops DB without prompt)
 "$GAR_BIN" remove -f feature-from-remote
 if [ -d "$HUB_DIR/feature-from-remote" ]; then

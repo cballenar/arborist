@@ -889,6 +889,28 @@ function cmd_switch() {
                 fi
             done < <(git for-each-ref --format='%(refname:short)' refs/remotes/origin 2>/dev/null | grep -v '^origin/HEAD$')
         fi
+
+        # If still not found in local heads or cached remote refs, fetch from origin and re-check remote refs
+        if [ "$has_local_branch" = false ] && [ "$has_remote_branch" = false ]; then
+            log "Branch '$BRANCH' not found in local cache. Fetching from origin..."
+            git fetch origin --quiet 2>/dev/null || true
+            if git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+                has_remote_branch=true
+            else
+                while IFS= read -r ref_b; do
+                    local rem_b="${ref_b#origin/}"
+                    if [ -n "$rem_b" ]; then
+                        local norm_rem=$(get_wt_dir_name "$rem_b")
+                        local norm_rem_b=$(echo "$rem_b" | tr '[:upper:]' '[:lower:]')
+                        if [ "$rem_b" = "$BRANCH" ] || [ "$norm_rem" = "$norm_req" ] || [ "$norm_rem_b" = "$norm_req_b" ]; then
+                            BRANCH="$rem_b"
+                            has_remote_branch=true
+                            break
+                        fi
+                    fi
+                done < <(git for-each-ref --format='%(refname:short)' refs/remotes/origin 2>/dev/null | grep -v '^origin/HEAD$')
+            fi
+        fi
     fi
 
     local wt_dir_name
