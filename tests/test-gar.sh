@@ -167,6 +167,19 @@ fi
 
 echo "✅ Init passed!"
 
+# 3.1 Test: Init without directory argument (infers from repo URL)
+echo ""
+echo "=> Testing: gar init without directory argument"
+mkdir -p "$TEST_DIR/auto-test"
+cd "$TEST_DIR/auto-test"
+"$GAR_BIN" init "$REMOTE_REPO"
+if [ ! -d "$TEST_DIR/auto-test/remote/.git" ] || [ ! -d "$TEST_DIR/auto-test/remote/develop" ]; then
+    echo "❌ Init without dir failed: Hub directory 'remote' not created"
+    exit 1
+fi
+rm -rf "$TEST_DIR/auto-test"
+cd "$HUB_DIR"
+
 # 4. Test: Switch (Create New Branch)
 echo ""
 echo "=> Testing: gar switch -c feature-1"

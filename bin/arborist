@@ -26,7 +26,7 @@ Usage:
   gar <command> [arguments]
 
 Commands:
-  init <repo_url> <dir>    Initialize a new Hub and provision baseline worktree
+  init <repo_url> [dir]    Initialize a new Hub and provision baseline worktree
   switch [-c] [options] [b] Switch to worktree, or checkout/create (-c) (--clone|--backup)
   list                     List all worktrees, branches, and database mappings
   info                     Show engine, current branch, DB name, and site URL
@@ -488,8 +488,31 @@ function cmd_init() {
     REPO_URL=$1
     HUB_DIR_ARG=$2
 
-    if [ -z "$REPO_URL" ] || [ -z "$HUB_DIR_ARG" ]; then
-        error_exit "Usage: gar init <repo_url> <hub_dir>"
+    if [ "$REPO_URL" = "-h" ] || [ "$REPO_URL" = "--help" ] || [ "$REPO_URL" = "help" ]; then
+        cat << 'EOF'
+Usage: gar init <repo_url> [hub_dir]
+
+Initialize a new Arborist Hub and provision baseline worktree.
+
+Arguments:
+  <repo_url>   Git repository URL to clone (HTTPS, SSH, or local path)
+  [hub_dir]    Directory name for the hub (defaults to repository name)
+EOF
+        exit 0
+    fi
+
+    if [ -z "$REPO_URL" ]; then
+        error_exit "Usage: gar init <repo_url> [hub_dir]"
+    fi
+
+    if [ -z "$HUB_DIR_ARG" ]; then
+        local clean_url="${REPO_URL%/}"
+        local raw_name
+        raw_name=$(basename "$clean_url" | sed -e 's|\.git$||')
+        if [ -z "$raw_name" ] || [ "$raw_name" = "/" ] || [ "$raw_name" = "." ]; then
+            error_exit "Could not infer directory name from repository URL: $REPO_URL\nUsage: gar init <repo_url> [hub_dir]"
+        fi
+        HUB_DIR_ARG="$raw_name"
     fi
 
     log "Initializing Arborist Hub in $HUB_DIR_ARG..."

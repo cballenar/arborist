@@ -89,7 +89,7 @@ gar -h
 
 Run the interactive wizard on any remote repository:
 ```bash
-gar init <git_repo_url> <hub_directory_name>
+gar init <git_repo_url> [hub_directory_name]
 ```
 
 The wizard guides you through:
