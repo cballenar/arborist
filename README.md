@@ -302,3 +302,9 @@ Arborist is the architectural successor to [`dbrancher`](https://github.com/crun
 
 While `dbrancher` introduced dynamic branch and database switching within a single-directory workflow, Arborist evolves that foundation into a fully integrated Hub-and-Spoke multi-worktree system. Decoupling the environment configuration into the Hub eliminates in-place re-indexing and enables truly concurrent branch development.
 
+
+## License
+
+This project is open-source software licensed under the [MIT License](LICENSE).
+
+
