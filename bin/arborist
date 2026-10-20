@@ -38,7 +38,7 @@ Database Commands:
 
 Setup & Maintenance:
   init <url> [dir]     Initialize a new Arborist Hub (dir defaults to repo name)
-  sync                 Sync Hub configs, wrappers, hooks, and worktree scaffolds
+  sync                 Re-apply templates, hooks, and command wrappers to the Hub
   prune [-f|--dry-run] Clean up orphaned worktrees, branches, and databases
   hook                 Output shell integration hook for eval in ~/.zshrc or ~/.bashrc
 
@@ -1834,7 +1834,7 @@ function cmd_sync() {
         cat << 'EOF'
 Usage: gar sync
 
-Synchronize Hub configuration, wrappers, hooks, and worktree scaffolds.
+Re-apply Arborist templates, Git hooks, and command wrappers to the Hub.
 EOF
         exit 0
     fi
