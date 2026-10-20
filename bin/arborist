@@ -22,38 +22,27 @@ if [ "$COMMAND" = "-h" ] || [ "$COMMAND" = "--help" ] || [ "$COMMAND" = "help" ]
     cat << 'EOF'
 Git Arborist (gar) - Multi-worktree workspace manager
 
-Usage:
-  gar <command> [arguments]
+Usage: gar <command> [options]
 
-Commands:
-  init <repo_url> [dir]    Initialize a new Hub and provision baseline worktree
-  switch [-c] [options] [b] Switch to worktree, or checkout/create (-c) (--clone|--backup)
-  list                     List all worktrees, branches, and database mappings
-  info                     Show engine, current branch, DB name, and site URL
-  prune [options]          Prune orphaned worktrees, branches, and databases (-f, --dry-run)
-  move [old_branch] <new>  Move/rename a worktree, branch, and database (aliases: mv, -m)
-  remove [options] <branch> Remove a worktree, branch, and drop isolated database (-f, -y)
-  db <action> [options]    Database operations (import/export/provision) (aliases: dbi, dbe, dbp)
-  sync                     Synchronize Hub configs, wrappers, hooks, and worktree scaffolds
-  install-hooks            Install Git hooks in the Hub for automatic pruning
-  hook                     Output shell integration hook for eval
-  -h, --help, help         Show this help message
+Workspace Commands:
+  info                 Show current branch, database name, and site URL
+  list [-a]            List worktrees, branches, and database statuses
+  switch [branch]      Switch to a worktree, checkout remote, or create new (-c, -y, --clone)
+  move [old] <new>     Rename a worktree, branch, and database (aliases: mv, -m)
+  remove [-f] <branch> Remove a worktree, branch, and isolated database
 
 Database Commands:
-  db import [--file <f>] [--target <b>]                         Import SQL dump into database (alias: dbi)
-  db export [--file <f>] [--target <b>]                         Export database to SQL dump (alias: dbe)
-  db provision [--clone|--backup] [--file <f>] [--target <b>]   Provision DB and run post-provision commands (alias: dbp)
+  dbi [options]        Import SQL dump into database          (gar db import)
+  dbe [options]        Export database to SQL dump            (gar db export)
+  dbp [options]        Import/clone DB & run post-provision   (gar db provision)
 
-Examples:
-  gar init git@github.com:org/repo.git my-project
-  gar switch feature-branch
-  gar switch -c new-feature
-  gar move new-feature-name
-  gar remove old-feature
-  gar db import
-  gar dbi --file custom.sql.gz
-  gar dbe --target feature-branch
-  gar dbp --target feature-branch
+Setup & Maintenance:
+  init <url> [dir]     Initialize a new Arborist Hub (dir defaults to repo name)
+  sync                 Sync Hub configs, wrappers, hooks, and worktree scaffolds
+  prune [-f|--dry-run] Clean up orphaned worktrees, branches, and databases
+  hook                 Output shell integration hook for eval in ~/.zshrc or ~/.bashrc
+
+Run 'gar <command> -h' for details on a specific command.
 EOF
     exit 0
 fi
@@ -97,6 +86,17 @@ fi
 
 # Handle 'hook' command before stdout redirection so eval "$(gar hook)" captures the shell definition
 if [ "$COMMAND" = "hook" ]; then
+    if [ "${2:-}" = "-h" ] || [ "${2:-}" = "--help" ] || [ "${2:-}" = "help" ]; then
+        cat << 'EOF'
+Usage: gar hook
+
+Output shell integration script for automatic directory switching and completions.
+
+Add to your shell configuration (~/.zshrc or ~/.bashrc):
+  eval "$(gar hook)"
+EOF
+        exit 0
+    fi
     BIN_PATH="$SCRIPT_DIR/arborist"
     cat << EOF
 # Git Arborist (gar) shell integration
@@ -764,6 +764,21 @@ function cmd_switch() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            -h|--help|help)
+                cat << 'EOF'
+Usage: gar switch [options] [branch]
+
+Switch to a worktree, checkout remote branch, or create a new branch.
+
+Options:
+  -c                 Create and checkout a new branch/worktree
+  -y, --yes          Accept default prompts automatically
+  --clone            Clone default database instead of importing backup
+  --backup           Import latest backup dump instead of cloning DB
+  -h, --help         Show this help message
+EOF
+                exit 0
+                ;;
             -c)
                 CREATE_FLAG=1
                 shift
@@ -1815,6 +1830,15 @@ EOF
 }
 
 function cmd_sync() {
+    if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "help" ]; then
+        cat << 'EOF'
+Usage: gar sync
+
+Synchronize Hub configuration, wrappers, hooks, and worktree scaffolds.
+EOF
+        exit 0
+    fi
+
     HUB_DIR=$(check_hub_dir)
     cd "$HUB_DIR"
     
@@ -2070,6 +2094,15 @@ function cmd_mv() {
 }
 
 function cmd_info() {
+    if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "help" ]; then
+        cat << 'EOF'
+Usage: gar info
+
+Show engine, current branch, database name, and site URL for the active worktree.
+EOF
+        exit 0
+    fi
+
     HUB_DIR=$(check_hub_dir)
     source "$HUB_DIR/.arborist" 2>/dev/null || true
     ENV_ENGINE=${ENV_ENGINE:-ddev}

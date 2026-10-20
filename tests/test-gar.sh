@@ -947,6 +947,27 @@ rm -f "$HUB_DIR/develop/.env"
 
 echo "✅ Worktree .env Isolation, Seeding, and Runtime Evaluation passed!"
 
+# 16. Test: Help output structure and command-level -h
+echo ""
+echo "=> Testing: gar help formatting and command-level -h"
+HELP_OUT=$("$GAR_BIN" -h)
+if ! echo "$HELP_OUT" | grep -q "Workspace Commands:" || \
+   ! echo "$HELP_OUT" | grep -q "Database Commands:" || \
+   ! echo "$HELP_OUT" | grep -q "Setup & Maintenance:" || \
+   ! echo "$HELP_OUT" | grep -q "hook"; then
+    echo "❌ Main help output missing expected sections or commands! Output:"
+    echo "$HELP_OUT"
+    exit 1
+fi
+
+for cmd in switch info list move remove init sync prune hook; do
+    if ! "$GAR_BIN" "$cmd" -h >/dev/null 2>&1; then
+        echo "❌ 'gar $cmd -h' failed!"
+        exit 1
+    fi
+done
+echo "✅ Help formatting and command-level -h passed!"
+
 echo ""
 echo "🎉 All tests passed successfully!"
 
