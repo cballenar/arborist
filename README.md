@@ -71,8 +71,8 @@ You can run `/path/to/arborist/bin/arborist hook` in your terminal anytime to in
 ### Tab Autocompletion
 
 Arborist includes built-in tab autocompletion for both **Zsh** and **Bash**. When shell integration is enabled via `./install.sh` or `eval "$(gar hook)"`, hitting `<Tab>` automatically completes:
-* Subcommands (`switch`, `list`, `prune`, `remove`, `db`, `dbi`, `dbe`, `dbp`, `-m`, etc.)
-* Active worktrees and Git branches for `switch`, `remove`, and `-m`
+* Subcommands (`switch`, `move`, `mv`, `-m`, `list`, `prune`, `remove`, `db`, `dbi`, `dbe`, `dbp`, etc.)
+* Active worktrees and Git branches for `switch`, `move`, `mv`, `-m`, and `remove`
 * Database subcommands (`import`, `export`, `provision`, `info`) and `--target` branch completion
 * Flags for commands such as `prune` (`-f`, `--force`, `--dry-run`) and `remove` (`-f`, `--force`)
 
@@ -122,14 +122,16 @@ gar switch -c --clone new-feature
 *Prompts with a 10-second timeout defaulting to **No** (`[y/N]`) before creating an isolated database (`db_new_feature`), or provisions immediately without prompting when `-y`/`--yes`, `--backup`, or `--clone` is passed. If skipped, you can run `gar db provision` (`gar dbp`) at any time.*
 
 
-### Move/Rename Worktree (`gar -m`)
+### Move/Rename Worktree (`gar move`, `gar mv`, `gar -m`)
 
 Seamlessly rename a branch, move its directory, update Git metadata, and migrate its database in one step:
 ```bash
 # When inside the worktree:
-gar -m new-branch-name
+gar move new-branch-name
+gar mv new-branch-name
 
 # Or explicitly from anywhere in the hub:
+gar move old-branch-name new-branch-name
 gar -m old-branch-name new-branch-name
 ```
 *Repairs Git worktree tracking, renames the Git branch (`git branch -m`), moves the folder, and migrates the database (`db_old` → `db_new`).*

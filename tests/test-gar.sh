@@ -195,10 +195,10 @@ fi
 
 echo "✅ Switch passed!"
 
-# 5. Test: Move (-m)
+# 5. Test: Move (gar move, gar mv, gar -m)
 echo ""
-echo "=> Testing: gar -m feature-1 feature-2"
-"$GAR_BIN" -m feature-1 feature-2 3>/dev/null
+echo "=> Testing: gar move and gar mv"
+"$GAR_BIN" move feature-1 feature-2 3>/dev/null
 
 if [ -d "feature-1" ] || [ ! -d "feature-2" ]; then
     echo "❌ Move failed: Directory not renamed"
@@ -216,12 +216,19 @@ if ! grep -q "CREATE DATABASE IF NOT EXISTS \`db_feature_2\`" "$TEST_DIR/ddev.lo
     exit 1
 fi
 
+# Test gar mv alias
+"$GAR_BIN" mv feature-2 feature-3 3>/dev/null
+if [ -d "feature-2" ] || [ ! -d "feature-3" ]; then
+    echo "❌ gar mv failed: Directory not renamed"
+    exit 1
+fi
+
 echo "✅ Move passed!"
 
 # 6. Test: Remove
 echo ""
-echo "=> Testing: gar remove feature-2"
-"$GAR_BIN" remove feature-2
+echo "=> Testing: gar remove feature-3"
+"$GAR_BIN" remove feature-3
 
 if [ -d "feature-2" ]; then
     echo "❌ Remove failed: Directory still exists"

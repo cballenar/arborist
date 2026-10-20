@@ -31,7 +31,7 @@ Commands:
   list                     List all worktrees, branches, and database mappings
   info                     Show engine, current branch, DB name, and site URL
   prune [options]          Prune orphaned worktrees, branches, and databases (-f, --dry-run)
-  -m [old_branch] <new>    Move/rename a worktree, branch, and database
+  move [old_branch] <new>  Move/rename a worktree, branch, and database (aliases: mv, -m)
   remove [options] <branch> Remove a worktree, branch, and drop isolated database (-f, -y)
   db <action> [options]    Database operations (import/export/provision) (aliases: dbi, dbe, dbp)
   sync                     Synchronize Hub configs, wrappers, hooks, and worktree scaffolds
@@ -48,7 +48,7 @@ Examples:
   gar init git@github.com:org/repo.git my-project
   gar switch feature-branch
   gar switch -c new-feature
-  gar -m new-feature-name
+  gar move new-feature-name
   gar remove old-feature
   gar db import
   gar dbi --file custom.sql.gz
@@ -101,7 +101,7 @@ if [ "$COMMAND" = "hook" ]; then
     cat << EOF
 # Git Arborist (gar) shell integration
 gar() {
-    if [ "\$1" = "switch" ] || [ "\$1" = "-m" ]; then
+    if [ "\$1" = "switch" ] || [ "\$1" = "-m" ] || [ "\$1" = "move" ] || [ "\$1" = "mv" ]; then
         local _cmd="\$1"
         shift
         local _target_path
@@ -127,6 +127,9 @@ if [ -n "\$ZSH_VERSION" ]; then
         commands=(
             'init:Initialize a new Hub and baseline worktree'
             'switch:Switch to a worktree or create a new one'
+            'move:Move or rename a worktree and database'
+            'mv:Move or rename a worktree and database'
+            '-m:Move or rename a worktree and database'
             'list:List all worktrees, branches, and database mappings'
             'info:Show engine, current branch, DB name, and site URL'
             'prune:Prune orphaned worktrees, branches, and databases'
@@ -138,7 +141,6 @@ if [ -n "\$ZSH_VERSION" ]; then
             'sync:Synchronize Hub configs, wrappers, and scaffolds'
             'sync-ddev:Synchronize Hub configs, wrappers, and scaffolds'
             'install-hooks:Install Git hooks in the Hub'
-            '-m:Move or rename a worktree and database'
         )
 
         if (( CURRENT == 2 )); then
@@ -156,7 +158,7 @@ if [ -n "\$ZSH_VERSION" ]; then
         fi
 
         case "\$words[2]" in
-            switch|remove|-m)
+            switch|remove|-m|move|mv)
                 local -a wts
                 wts=(\$( "$BIN_PATH" __complete worktrees 2>/dev/null ))
                 if (( \${#wts} > 0 )); then
@@ -185,7 +187,7 @@ elif [ -n "\$BASH_VERSION" ]; then
         cur="\${COMP_WORDS[COMP_CWORD]}"
         prev="\${COMP_WORDS[COMP_CWORD-1]}"
 
-        local commands="init switch list info prune remove db dbi dbe dbp sync sync-ddev install-hooks -m -h help"
+        local commands="init switch move mv -m list info prune remove db dbi dbe dbp sync sync-ddev install-hooks -h help"
 
         if [ "\$COMP_CWORD" -eq 1 ]; then
             COMPREPLY=( \$(compgen -W "\$commands" -- "\$cur") )
@@ -193,7 +195,7 @@ elif [ -n "\$BASH_VERSION" ]; then
         fi
 
         case "\$prev" in
-            switch|remove|-m)
+            switch|remove|-m|move|mv)
                 local wts
                 wts=\$("$BIN_PATH" __complete worktrees 2>/dev/null)
                 COMPREPLY=( \$(compgen -W "\$wts" -- "\$cur") )
@@ -1911,9 +1913,26 @@ function cmd_sync_ddev() {
     cmd_sync "$@"
 }
 
-function cmd_m() {
+function cmd_move() {
+    if [ "$1" = "-h" ] || [ "$1" = "--help" ] || [ "$1" = "help" ]; then
+        cat << 'EOF'
+Usage: gar move [options] [old_branch] <new_branch>
+Aliases: gar mv, gar -m
+
+Move or rename a worktree, its Git branch, and isolated database.
+
+Arguments:
+  [old_branch]   Existing branch/worktree to rename (defaults to current worktree).
+  <new_branch>   New branch/worktree name.
+
+Options:
+  -h, --help     Show this help message
+EOF
+        exit 0
+    fi
+
     if [ -z "$1" ]; then
-        error_exit "Usage: gar -m [old_branch] <new_branch>"
+        error_exit "Usage: gar move [old_branch] <new_branch>\nAliases: gar mv, gar -m"
     fi
 
     HUB_DIR=$(check_hub_dir)
@@ -2017,6 +2036,14 @@ function cmd_m() {
     
     # Output the new path so the shell wrapper can cd into it
     echo "$HUB_DIR/$new_wt_dir" >&3
+}
+
+function cmd_m() {
+    cmd_move "$@"
+}
+
+function cmd_mv() {
+    cmd_move "$@"
 }
 
 function cmd_info() {
@@ -2514,8 +2541,8 @@ case "$COMMAND" in
     remove)
         cmd_remove "$@"
         ;;
-    -m)
-        cmd_m "$@"
+    move|mv|-m)
+        cmd_move "$@"
         ;;
     sync|update|sync-ddev)
         cmd_sync "$@"
