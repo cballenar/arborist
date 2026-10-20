@@ -592,9 +592,13 @@ echo ""
 echo "=> Testing: Branch Names with Slashes and Drush Command Wrapper"
 cd "$HUB_DIR"
 
-# Verify DDEV drush command wrapper was installed during init
+# Verify DDEV drush and twig-debug command wrappers were installed during init
 if [ ! -x "$HUB_DIR/.ddev/commands/web/drush" ]; then
     echo "❌ Drush command wrapper missing or not executable at .ddev/commands/web/drush"
+    exit 1
+fi
+if [ ! -x "$HUB_DIR/.ddev/commands/web/twig-debug" ]; then
+    echo "❌ twig-debug command wrapper missing or not executable at .ddev/commands/web/twig-debug"
     exit 1
 fi
 
@@ -821,8 +825,9 @@ echo "✅ Pre-existing database detection passed!"
 # 13. Test: gar sync (programmatic project update and healing)
 echo ""
 echo "=> Testing: gar sync (programmatic project update and healing)"
-# Intentionally remove a wrapper and a worktree scaffold file to test healing
+# Intentionally remove wrappers and a worktree scaffold file to test healing
 rm -f "$HUB_DIR/.ddev/commands/web/drush"
+rm -f "$HUB_DIR/.ddev/commands/web/twig-debug"
 rm -f "$HUB_DIR/develop/docroot/sites/development.services.yml"
 
 SYNC_OUT=$("$GAR_BIN" sync 2>&1)
@@ -834,6 +839,11 @@ fi
 
 if [ ! -x "$HUB_DIR/.ddev/commands/web/drush" ]; then
     echo "❌ gar sync did not restore .ddev/commands/web/drush!"
+    exit 1
+fi
+
+if [ ! -x "$HUB_DIR/.ddev/commands/web/twig-debug" ]; then
+    echo "❌ gar sync did not restore .ddev/commands/web/twig-debug!"
     exit 1
 fi
 

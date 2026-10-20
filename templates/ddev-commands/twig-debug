@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+
+## Description: Toggles Twig debugging on or off depending on its current status
+## Usage: twig-debug [on|off]
+## Example: "ddev twig-debug" or "ddev twig-debug on"
+## HostWorkingDir: true
+
+# Ensure project custom commands (like arborist's drush wrapper) take precedence
+if [ -d "/mnt/ddev_config/commands/web" ]; then
+  PATH="/mnt/ddev_config/commands/web:$PATH"
+fi
+
+echo "Initializing..."
+status=$(drush php:eval "var_export(\Drupal::getContainer()->getParameter('twig.config')['debug']); echo PHP_EOL;" 2>/dev/null || true)
+status=$(echo "$status" | tr -d '[:space:]')
+
+if [ -z "$status" ]; then
+  echo "Error: Unable to determine Twig debug status. Ensure Drupal is installed and database is reachable." >&2
+  exit 1
+fi
+
+value=""
+if [[ "$1" == "on" ]]; then
+  value=1
+elif [[ "$1" == "off" ]]; then
+  value=0
+elif [[ -z "$1" ]]; then
+  if [ "$status" == "1" ] || [ "$status" == "true" ]; then
+    value=0
+  else
+    value=1
+  fi
+else
+  echo "Usage: twig-debug [on|off]" >&2
+  exit 1
+fi
+
+if [[ "$value" == 1 ]]; then
+  new_status="Enabled"
+else
+  new_status="Disabled"
+fi
+
+if [[ "$value" == 1 ]]; then
+  if [[ "$status" == "true" || "$status" == "1" ]]; then
+    echo "Twig debug is already $new_status."
+    exit 0
+  fi
+elif [[ "$value" == 0 ]]; then
+  if [[ "$status" == "false" || "$status" == "0" ]]; then
+    echo "Twig debug is already $new_status."
+    exit 0
+  fi
+fi
+
+echo "Updating settings to $new_status..."
+drush php:eval "
+  \$settings = \Drupal::keyValue('development_settings');
+  \$settings->set('twig_debug', (bool) $value);
+  \$settings->set('twig_cache_disable', (bool) $value);
+  \$settings->set('disable_rendered_output_cache_bins', (bool) $value);
+"
+
+echo "Rebuilding cache..."
+drush cache:rebuild --quiet
+
+echo -e "Confirming changes...\n"
+check=$(drush php:eval "var_export(\Drupal::getContainer()->getParameter('twig.config')['debug']); echo PHP_EOL;" 2>/dev/null || true)
+check=$(echo "$check" | tr -d '[:space:]')
+
+if [ "$status" == "$check" ] || [ -z "$new_status" ]; then
+  echo "Unable to update Twig debug settings. Troubleshoot this script from: .ddev/commands/web/twig-debug"
+  exit 1
+else
+  echo "Twig Debug $new_status!"
+fi
