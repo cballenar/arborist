@@ -4,6 +4,18 @@
 
 By leveraging native **Git Worktrees** and **Sparse-Checkouts**, Arborist replaces disruptive in-place branch checking out and re-indexing with a persistent **Hub-and-Spoke** architecture where multiple feature branches run concurrently under a single shared environment.
 
+```text
+$ gar list
+Hub: ~/Documents/my-project
+
+STATUS                URL
+--------------------  -------------------------------------------------------------
+🟢 Current            https://feature-search.my-project.ddev.site
+🟡 Protected          https://my-project.ddev.site (develop)
+⚪ Valid              https://bugfix-nav.my-project.ddev.site
+🔴 Orphaned [gone]    https://feature-old.my-project.ddev.site
+```
+
 
 ## Who Is This For?
 
@@ -67,10 +79,11 @@ gar info
 
 ### List Worktrees & Databases (`gar list`)
 
-List all active worktrees, branches, and database statuses.
+List active worktrees, branches, databases, and site URLs.
 
 ```bash
 gar list
+gar list -v   # detailed multi-line workspace cards
 gar list -a   # include Git branches without worktrees
 ```
 

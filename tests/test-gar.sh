@@ -411,14 +411,40 @@ echo ""
 echo "=> Testing: gar list and gar prune"
 cd "$HUB_DIR"
 
-# 9.1 Verify 'gar list' output from hub root
+# 9.1 Verify 'gar list' output from hub root (develop is default active context)
 LIST_OUTPUT=$("$GAR_BIN" list 2>&1)
 if ! echo "$LIST_OUTPUT" | grep -q "develop"; then
     echo "❌ gar list failed: develop worktree not listed"
     exit 1
 fi
-if ! echo "$LIST_OUTPUT" | grep -q "🟡 Protect"; then
-    echo "❌ gar list failed: develop not marked protected"
+if ! echo "$LIST_OUTPUT" | grep -q "🟢 Current.*develop"; then
+    echo "❌ gar list failed: develop not marked Current when invoked from hub root"
+    exit 1
+fi
+if ! echo "$LIST_OUTPUT" | grep -q "https://test-project.ddev.site"; then
+    echo "❌ gar list failed: site URL missing from list output"
+    exit 1
+fi
+
+# Verify 'gar list' marks current worktree as Current when invoked inside a worktree
+WT_LIST=$(cd "$HUB_DIR/develop" && "$GAR_BIN" list 2>&1)
+if ! echo "$WT_LIST" | grep -q "🟢 Current.*develop"; then
+    echo "❌ gar list failed to mark active worktree as Current when inside develop"
+    exit 1
+fi
+
+# Verify 'gar list -v' outputs detailed cards
+VERB_OUTPUT=$(cd "$HUB_DIR/develop" && "$GAR_BIN" list -v 2>&1)
+if ! echo "$VERB_OUTPUT" | grep -q "Branch:.*develop.*(current)"; then
+    echo "❌ gar list -v failed to output verbose current worktree card"
+    exit 1
+fi
+if ! echo "$VERB_OUTPUT" | grep -q "Status:.*🟢 Current"; then
+    echo "❌ gar list -v failed to output Status: 🟢 Current"
+    exit 1
+fi
+if ! echo "$VERB_OUTPUT" | grep -q "Worktree:.*develop"; then
+    echo "❌ gar list -v failed to output worktree path"
     exit 1
 fi
 
@@ -432,6 +458,27 @@ git -C "$HUB_DIR/develop" fetch origin >/dev/null 2>&1
 # Switch into feature-prune-clean worktree and set upstream
 "$GAR_BIN" switch -c feature-prune-clean 3>/dev/null
 git -C "$HUB_DIR/feature-prune-clean" branch --set-upstream-to=origin/feature-prune-clean
+
+CLEAN_LIST=$(cd "$HUB_DIR/feature-prune-clean" && "$GAR_BIN" list 2>&1)
+if ! echo "$CLEAN_LIST" | grep -q "🟢 Current.*feature-prune-clean"; then
+    echo "❌ gar list failed: feature-prune-clean not marked Current when inside its worktree"
+    exit 1
+fi
+if ! echo "$CLEAN_LIST" | grep -q "🟡 Protected.*develop"; then
+    echo "❌ gar list failed: develop not marked protected when inside another worktree"
+    exit 1
+fi
+
+FIRST_ROW=$(echo "$CLEAN_LIST" | awk '/^---+/{getline; print $0}')
+SECOND_ROW=$(echo "$CLEAN_LIST" | awk '/^---+/{getline; getline; print $0}')
+if ! echo "$FIRST_ROW" | grep -q "🟢 Current"; then
+    echo "❌ gar list failed: first row is not Current"
+    exit 1
+fi
+if ! echo "$SECOND_ROW" | grep -q "🟡 Protected"; then
+    echo "❌ gar list failed: second row is not Protected"
+    exit 1
+fi
 
 # Switch into feature-prune-dirty worktree, set upstream, and leave dirty file
 "$GAR_BIN" switch -c feature-prune-dirty 3>/dev/null

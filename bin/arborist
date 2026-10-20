@@ -26,7 +26,7 @@ Usage: gar <command> [options]
 
 Workspace Commands:
   info                 Show current branch, database name, and site URL
-  list [-a]            List worktrees, branches, and database statuses
+  list [-a] [-v]       List active worktrees, status, and site URLs
   switch [branch]      Switch to a worktree, checkout remote, or create new (-c, -y, --clone)
   move [old] <new>     Rename a worktree, branch, and database (aliases: mv, -m)
   remove [-f] <branch> Remove a worktree, branch, and isolated database
@@ -172,6 +172,15 @@ if [ -n "\$ZSH_VERSION" ]; then
                     _describe -t dbcmds 'db command' dbcmds
                 fi
                 ;;
+            list)
+                local -a lopts
+                lopts=('-a:Also list Git branches without worktrees' '--all:Also list Git branches without worktrees' '-v:Show detailed multi-line workspace information' '--verbose:Show detailed multi-line workspace information')
+                _describe -t lopts 'list option' lopts
+                ;;
+            list)
+                COMPREPLY=( \$(compgen -W "-a --all -v --verbose" -- "\$cur") )
+                return 0
+                ;;
             prune)
                 local -a popts
                 popts=('-f:Force prune without prompt' '--force:Force prune without prompt' '--dry-run:Preview pruned resources')
@@ -203,6 +212,15 @@ elif [ -n "\$BASH_VERSION" ]; then
                 ;;
             db)
                 COMPREPLY=( \$(compgen -W "import export provision info" -- "\$cur") )
+                return 0
+                ;;
+            list)
+                local -a lopts
+                lopts=('-a:Also list Git branches without worktrees' '--all:Also list Git branches without worktrees' '-v:Show detailed multi-line workspace information' '--verbose:Show detailed multi-line workspace information')
+                _describe -t lopts 'list option' lopts
+                ;;
+            list)
+                COMPREPLY=( \$(compgen -W "-a --all -v --verbose" -- "\$cur") )
                 return 0
                 ;;
             prune)
@@ -1241,21 +1259,32 @@ EOF
 
 function cmd_list() {
     local SHOW_ALL=false
+    local VERBOSE=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -a|--all)
                 SHOW_ALL=true
                 shift
                 ;;
+            -v|--verbose)
+                VERBOSE=true
+                shift
+                ;;
+            -av|-va)
+                SHOW_ALL=true
+                VERBOSE=true
+                shift
+                ;;
             -h|--help)
                 cat << 'EOF'
 Usage: gar list [options]
 
-List active worktrees, databases, and environment statuses.
+List active worktrees, status, and site URLs.
 
 Options:
-  -a, --all    Also list Git branches without worktrees
-  -h, --help   Show this help message
+  -a, --all        Also list Git branches without worktrees
+  -v, --verbose    Show detailed multi-line workspace information
+  -h, --help       Show this help message
 EOF
                 exit 0
                 ;;
@@ -1279,11 +1308,70 @@ EOF
         if [ -n "$GAR_MOCK_DBS" ]; then
             ddev_running=true
             existing_dbs="$GAR_MOCK_DBS"
-        elif ddev describe >/dev/null 2>&1; then
-            ddev_running=true
-            existing_dbs=$(ddev mysql -N -e "SHOW DATABASES;" 2>/dev/null | tr -d '| ' | grep -E '^db$|^db_' || true)
+        elif command -v ddev >/dev/null 2>&1; then
+            if ddev mysql -N -e "SHOW DATABASES;" >/dev/null 2>&1; then
+                ddev_running=true
+                existing_dbs=$(ddev mysql -N -e "SHOW DATABASES;" 2>/dev/null | tr -d '| ' | grep -E '^db$|^db_' || true)
+            fi
         fi
     fi
+
+    # Determine base domain & scheme for site URLs
+    local scheme="${DDEV_SCHEME:-https}"
+    local base_domain=""
+    if [ "$ENV_ENGINE" == "ddev" ]; then
+        local proj_name=""
+        local proj_tld="ddev.site"
+        if [ -f "$HUB_DIR/.ddev/config.yaml" ]; then
+            proj_name=$(grep '^name:' "$HUB_DIR/.ddev/config.yaml" | head -n 1 | awk '{print $2}' | tr -d '"' | tr -d "'" 2>/dev/null || true)
+            local tld_val
+            tld_val=$(grep '^project_tld:' "$HUB_DIR/.ddev/config.yaml" | head -n 1 | awk '{print $2}' | tr -d '"' | tr -d "'" 2>/dev/null || true)
+            [ -n "$tld_val" ] && proj_tld="$tld_val"
+        fi
+        if [ -n "$DDEV_PRIMARY_URL" ]; then
+            scheme="${DDEV_PRIMARY_URL%%://*}"
+            base_domain="${DDEV_PRIMARY_URL#*://}"
+            base_domain="${base_domain%%/*}"
+        elif [ -n "$proj_name" ]; then
+            base_domain="${proj_name}.${proj_tld}"
+        fi
+    fi
+
+    local real_hub
+    real_hub=$(cd "$HUB_DIR" 2>/dev/null && pwd -P || echo "$HUB_DIR")
+    local real_invocation_dir
+    real_invocation_dir=$(cd "$INVOCATION_DIR" 2>/dev/null && pwd -P || echo "$INVOCATION_DIR")
+
+    local current_active_branch=""
+    local current_wt_top=""
+    if [ "$INVOCATION_DIR" != "$HUB_DIR" ] && [[ "$INVOCATION_DIR" == "$HUB_DIR/"* ]]; then
+        current_wt_top=$(git -C "$INVOCATION_DIR" rev-parse --show-toplevel 2>/dev/null || true)
+        if [ -n "$current_wt_top" ] && [ "$current_wt_top" != "$HUB_DIR" ]; then
+            current_wt_top=$(cd "$current_wt_top" 2>/dev/null && pwd -P || echo "$current_wt_top")
+            local b
+            b=$(git -C "$current_wt_top" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+            if [ -n "$b" ] && [ "$b" != "HEAD" ]; then
+                current_active_branch="$b"
+            else
+                current_active_branch="${current_wt_top#$HUB_DIR/}"
+            fi
+        fi
+    fi
+
+    if [ -z "$current_active_branch" ]; then
+        local hub_b
+        hub_b=$(git -C "$HUB_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+        if [ -n "$hub_b" ] && [ "$hub_b" != "HEAD" ]; then
+            current_active_branch="$hub_b"
+        else
+            current_active_branch="$DEFAULT_BRANCH"
+        fi
+    fi
+
+    local norm_active=$(echo "$current_active_branch" | tr '[:upper:]' '[:lower:]')
+    local norm_invoc=$(echo "$real_invocation_dir" | tr '[:upper:]' '[:lower:]')
+    local norm_wt_top=""
+    [ -n "$current_wt_top" ] && norm_wt_top=$(echo "$current_wt_top" | tr '[:upper:]' '[:lower:]')
 
     log "=== Git Arborist Workspaces & Databases ==="
     log "Hub: $HUB_DIR"
@@ -1326,22 +1414,27 @@ EOF
         wt_branches+=("$cur_branch")
     fi
 
+    local -a row_is_active=()
     local -a row_icons=()
     local -a row_status_texts=()
-    local -a row_lines1=()
-    local -a row_lines2=()
-    local -a row_lines3=()
+    local -a row_branches=()
+    local -a row_wts=()
+    local -a row_dbs=()
+    local -a row_db_displays=()
     local -a row_db_statuses=()
-
-    local max_s=6
-    local max_w=9
-    local max_d=9
+    local -a row_urls=()
 
     local i=0
     while [ $i -lt ${#wt_paths[@]} ]; do
         local wt="${wt_paths[$i]}"
         local branch="${wt_branches[$i]}"
-        local wt_rel="./${wt#$HUB_DIR/}"
+        local real_wt
+        real_wt=$(cd "$wt" 2>/dev/null && pwd -P || echo "$wt")
+        local wt_rel="./${real_wt#$real_hub/}"
+        if [ "$wt_rel" = "$real_wt" ]; then
+            wt_rel="$wt"
+        fi
+
         PROCESSED_BRANCHES="$PROCESSED_BRANCHES$branch "
 
         local db_name
@@ -1357,68 +1450,92 @@ EOF
             track=$(git for-each-ref --format '%(upstream:track)' "refs/heads/$branch" 2>/dev/null || true)
         fi
 
+        local norm_branch=$(echo "$branch" | tr '[:upper:]' '[:lower:]')
+        local norm_real_wt=$(echo "$real_wt" | tr '[:upper:]' '[:lower:]')
+
+        local is_active=false
+        if [ -n "$norm_wt_top" ]; then
+            if [ "$norm_real_wt" = "$norm_wt_top" ] || [ "$norm_branch" = "$norm_active" ]; then
+                is_active=true
+            elif [ "$norm_invoc" = "$norm_real_wt" ] || [[ "$norm_invoc" == "$norm_real_wt/"* ]]; then
+                is_active=true
+            fi
+        else
+            if [ "$norm_branch" = "$norm_active" ]; then
+                is_active=true
+            fi
+        fi
+
         local icon="⚪"
         local status_text="Valid"
 
-        local is_active=false
-        if [ "$INVOCATION_DIR" = "$wt" ] || [[ "$INVOCATION_DIR" == "$wt/"* ]]; then
-            is_active=true
-        fi
-
-        if [ "$track" = "[gone]" ]; then
-            if [ "$is_active" = true ]; then
-                icon="🟢"
-                status_text="Active ([gone])"
-            else
-                icon="🔴"
-                status_text="Orphaned ([gone])"
-            fi
-        elif [ "$is_active" = true ]; then
+        if [ "$is_active" = true ]; then
             icon="🟢"
-            status_text="Active"
+            if [ "$track" = "[gone]" ]; then
+                status_text="Current ([gone])"
+            else
+                status_text="Current"
+            fi
+        elif [ "$track" = "[gone]" ]; then
+            icon="🔴"
+            status_text="Orphaned ([gone])"
         elif is_in_comma_list "$branch" "$PROTECTED_BRANCHES"; then
             icon="🟡"
-            status_text="Protect"
+            status_text="Protected"
         else
             icon="⚪"
             status_text="Valid"
         fi
 
         local db_status="Ready"
+        local db_display="$db_name"
         if [ "$ddev_running" = false ]; then
             db_status="Unknown"
+            db_display="$db_name"
         else
             if [ "$branch" == "$DEFAULT_BRANCH" ]; then
                 if is_in_space_list "db" "$existing_dbs"; then
                     db_status="Default"
+                    db_display="db"
                 else
                     db_status="Missing"
+                    db_display="Missing"
                 fi
             else
                 if is_in_space_list_ci "$db_name" "$existing_dbs"; then
                     db_status="Ready"
+                    db_display="$db_name"
                 else
                     db_status="Missing"
+                    db_display="Missing"
                 fi
             fi
         fi
 
-        local l1="Branch:   $branch"
-        local l2="Worktree: $wt_rel"
-        local l3="Database: $db_name"
+        local url="-"
+        if [ -n "$base_domain" ]; then
+            local norm_b=$(echo "$branch" | tr '[:upper:]' '[:lower:]')
+            local norm_def=$(echo "$DEFAULT_BRANCH" | tr '[:upper:]' '[:lower:]')
+            if [ "$norm_b" == "$norm_def" ]; then
+                url="${scheme}://${base_domain} ($branch)"
+            else
+                local subdomain
+                subdomain=$(get_wt_dir_name "$branch")
+                url="${scheme}://${subdomain}.${base_domain}"
+            fi
+        else
+            url="$branch"
+        fi
 
+        row_is_active+=("$is_active")
         row_icons+=("$icon")
         row_status_texts+=("$status_text")
-        row_lines1+=("$l1")
-        row_lines2+=("$l2")
-        row_lines3+=("$l3")
+        row_branches+=("$branch")
+        row_wts+=("$wt_rel")
+        row_dbs+=("$db_name")
+        row_db_displays+=("$db_display")
         row_db_statuses+=("$db_status")
-
-        [ ${#status_text} -gt $max_s ] && max_s=${#status_text}
-        [ ${#l1} -gt $max_w ] && max_w=${#l1}
-        [ ${#l2} -gt $max_w ] && max_w=${#l2}
-        [ ${#l3} -gt $max_w ] && max_w=${#l3}
-        [ ${#db_status} -gt $max_d ] && max_d=${#db_status}
+        row_urls+=("$url")
 
         i=$((i + 1))
     done
@@ -1429,25 +1546,23 @@ EOF
             if ! is_in_space_list_ci "$db" "$PROCESSED_DBS"; then
                 local icon="🔴"
                 local status_text="Orphaned"
-                local l1="Database: $db"
                 local db_status="Orphaned"
 
                 if [ "$db" == "db" ]; then
                     icon="🟡"
-                    status_text="Protect"
+                    status_text="Protected"
                     db_status="Default"
                 fi
 
+                row_is_active+=(false)
                 row_icons+=("$icon")
                 row_status_texts+=("$status_text")
-                row_lines1+=("$l1")
-                row_lines2+=("")
-                row_lines3+=("")
+                row_branches+=("<none>")
+                row_wts+=("<none>")
+                row_dbs+=("$db")
+                row_db_displays+=("$db")
                 row_db_statuses+=("$db_status")
-
-                [ ${#status_text} -gt $max_s ] && max_s=${#status_text}
-                [ ${#l1} -gt $max_w ] && max_w=${#l1}
-                [ ${#db_status} -gt $max_d ] && max_d=${#db_status}
+                row_urls+=("Database: $db")
             fi
         done
     fi
@@ -1464,74 +1579,121 @@ EOF
                 fi
 
                 local icon="⚪"
-                local status_text="Valid"
-                if is_in_comma_list "$bname" "$PROTECTED_BRANCHES"; then
-                    icon="🟡"
-                    status_text="Protect"
-                elif [ "$btrack" = "[gone]" ]; then
+                local status_text="No worktree"
+                if [ "$btrack" = "[gone]" ]; then
                     icon="🔴"
                     status_text="Orphaned ([gone])"
+                elif is_in_comma_list "$bname" "$PROTECTED_BRANCHES"; then
+                    icon="🟡"
+                    status_text="Protected"
                 fi
 
                 local db_status="No worktree"
+                local db_display="Missing"
                 if [ "$ddev_running" = true ]; then
                     if is_in_space_list_ci "$db_name" "$existing_dbs"; then
                         db_status="Ready"
-                    else
-                        db_status="Missing"
+                        db_display="$db_name"
                     fi
                 elif [ "$ddev_running" = false ]; then
                     db_status="Unknown"
+                    db_display="$db_name"
                 fi
 
-                local l1="Branch:   $bname"
-                local l2="Worktree: <none>"
-                local l3="Database: $db_name"
+                local url="Branch: $bname"
 
+                row_is_active+=(false)
                 row_icons+=("$icon")
                 row_status_texts+=("$status_text")
-                row_lines1+=("$l1")
-                row_lines2+=("$l2")
-                row_lines3+=("$l3")
+                row_branches+=("$bname")
+                row_wts+=("<none>")
+                row_dbs+=("$db_name")
+                row_db_displays+=("$db_display")
                 row_db_statuses+=("$db_status")
-
-                [ ${#status_text} -gt $max_s ] && max_s=${#status_text}
-                [ ${#l1} -gt $max_w ] && max_w=${#l1}
-                [ ${#l2} -gt $max_w ] && max_w=${#l2}
-                [ ${#l3} -gt $max_w ] && max_w=${#l3}
-                [ ${#db_status} -gt $max_d ] && max_d=${#db_status}
+                row_urls+=("$url")
             fi
         done < <(git for-each-ref --format '%(refname:short)|%(upstream:track)' refs/heads)
     fi
 
-    # Print dynamically formatted table
-    local status_col_width=$((max_s + 3))
-    local sep_s=$(printf "%0.s-" $(seq 1 $status_col_width))
-    local sep_d=$(printf "%0.s-" $(seq 1 $max_d))
-    local sep_w=$(printf "%0.s-" $(seq 1 $max_w))
+    # Sort order: 1. Current workspace, 2. Protected branches, 3. Remaining workspaces
+    local -a sorted_indices=()
+    local k=0
+    while [ $k -lt ${#row_status_texts[@]} ]; do
+        if [ "${row_is_active[$k]}" = true ]; then
+            sorted_indices+=($k)
+        fi
+        k=$((k + 1))
+    done
+    k=0
+    while [ $k -lt ${#row_status_texts[@]} ]; do
+        if [ "${row_is_active[$k]}" != true ] && [ "${row_status_texts[$k]}" = "Protected" ]; then
+            sorted_indices+=($k)
+        fi
+        k=$((k + 1))
+    done
+    k=0
+    while [ $k -lt ${#row_status_texts[@]} ]; do
+        if [ "${row_is_active[$k]}" != true ] && [ "${row_status_texts[$k]}" != "Protected" ]; then
+            sorted_indices+=($k)
+        fi
+        k=$((k + 1))
+    done
 
-    printf "%-${status_col_width}s  %-${max_d}s  %s\n" "STATUS" "DB STATUS" "WORKSPACE"
-    printf "%-${status_col_width}s  %-${max_d}s  %s\n" "$sep_s" "$sep_d" "$sep_w"
+    # Render verbose mode
+    if [ "$VERBOSE" = true ]; then
+        for idx in "${sorted_indices[@]}"; do
+            local is_act="${row_is_active[$idx]}"
+            local icon="${row_icons[$idx]}"
+            local stext="${row_status_texts[$idx]}"
+            local branch="${row_branches[$idx]}"
+            local wt="${row_wts[$idx]}"
+            local db="${row_dbs[$idx]}"
+            local dstat="${row_db_statuses[$idx]}"
+            local url="${row_urls[$idx]}"
+
+            local cur_suffix=""
+            if [ "$is_act" = true ]; then
+                cur_suffix=" (current)"
+            fi
+
+            printf "Branch:    %s%s\n" "$branch" "$cur_suffix"
+            printf "Status:    %s %s\n" "$icon" "$stext"
+            printf "Worktree:  %s\n" "$wt"
+            printf "Database:  %s (%s)\n" "$db" "$dstat"
+            printf "URL:       %s\n" "$url"
+            echo ""
+        done
+        return 0
+    fi
+
+    # Render compact one-line table (default): ONLY icon/status and URL
+    local max_s=6 # length of "STATUS"
+    local max_u=3 # length of "URL"
 
     local j=0
-    while [ $j -lt ${#row_lines1[@]} ]; do
-        local icon="${row_icons[$j]}"
+    while [ $j -lt ${#row_status_texts[@]} ]; do
         local stext="${row_status_texts[$j]}"
-        local l1="${row_lines1[$j]}"
-        local l2="${row_lines2[$j]}"
-        local l3="${row_lines3[$j]}"
-        local dstat="${row_db_statuses[$j]}"
+        local url="${row_urls[$j]}"
 
-        printf "%s %-${max_s}s  %-${max_d}s  %s\n" "$icon" "$stext" "$dstat" "$l1"
-        if [ -n "$l2" ]; then
-            printf "%${status_col_width}s  %${max_d}s  %s\n" "" "" "$l2"
-        fi
-        if [ -n "$l3" ]; then
-            printf "%${status_col_width}s  %${max_d}s  %s\n" "" "" "$l3"
-        fi
-
-        echo ""
+        [ ${#stext} -gt $max_s ] && max_s=${#stext}
+        [ ${#url} -gt $max_u ] && max_u=${#url}
         j=$((j + 1))
+    done
+
+    local visual_status_width=$((max_s + 3))
+
+    local sep_s=$(printf "%0.s-" $(seq 1 $visual_status_width))
+    local sep_u=$(printf "%0.s-" $(seq 1 $max_u))
+
+    printf "%-${visual_status_width}s  %s\n" "STATUS" "URL"
+    printf "%-${visual_status_width}s  %s\n" "$sep_s" "$sep_u"
+
+    for idx in "${sorted_indices[@]}"; do
+        local icon="${row_icons[$idx]}"
+        local stext="${row_status_texts[$idx]}"
+        local url="${row_urls[$idx]}"
+
+        printf "%s %-${max_s}s  %s\n" "$icon" "$stext" "$url"
     done
 }
 
