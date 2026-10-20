@@ -853,6 +853,95 @@ if [ -d "$HUB_DIR/Legacy-Capital-Branch" ]; then
     "$GAR_BIN" remove -f legacy-capital-branch
 fi
 
+# 11.6 Test: Branch Names with Periods and Special Characters
+echo ""
+echo "=> Testing: Branch Names with Periods and Special Characters"
+SPECIAL_BRANCH="bsph/release-2026-10.1"
+SPECIAL_DIR="bsph-release-2026-10-1"
+SPECIAL_DB="db_bsph_release_2026_10_1"
+
+SPECIAL_TARGET=$("$GAR_BIN" switch -c "$SPECIAL_BRANCH")
+if [ "$SPECIAL_TARGET" != "$HUB_DIR/$SPECIAL_DIR" ] || [ ! -d "$HUB_DIR/$SPECIAL_DIR" ]; then
+    echo "❌ Period branch worktree directory was not sanitized! Expected $HUB_DIR/$SPECIAL_DIR, got $SPECIAL_TARGET"
+    exit 1
+fi
+
+if [ -d "$HUB_DIR/bsph-release-2026-10.1" ]; then
+    echo "❌ Period branch created unsanitized directory with period!"
+    exit 1
+fi
+
+if ! grep -q "CREATE DATABASE IF NOT EXISTS \`$SPECIAL_DB\`" "$TEST_DIR/ddev.log"; then
+    echo "❌ Database name for period branch was not sanitized! Expected $SPECIAL_DB"
+    exit 1
+fi
+
+cd "$HUB_DIR/$SPECIAL_DIR"
+INFO_SPECIAL=$("$GAR_BIN" info 2>&1)
+if ! echo "$INFO_SPECIAL" | grep -q "Current Branch: $SPECIAL_BRANCH"; then
+    echo "❌ gar info did not display preserved branch name for period branch! Got:"
+    echo "$INFO_SPECIAL"
+    exit 1
+fi
+if ! echo "$INFO_SPECIAL" | grep -q "DB Name:        $SPECIAL_DB"; then
+    echo "❌ gar info did not display sanitized DB name for period branch! Got:"
+    echo "$INFO_SPECIAL"
+    exit 1
+fi
+if ! echo "$INFO_SPECIAL" | grep -q "URL:            https://$SPECIAL_DIR.test-project.ddev.site"; then
+    echo "❌ gar info did not display sanitized URL for period branch! Got:"
+    echo "$INFO_SPECIAL"
+    exit 1
+fi
+
+DRUSH_SPECIAL_OUT=$(DDEV_PRIMARY_URL="https://test-project.ddev.site" DDEV_SCHEME="https" "$HUB_DIR/.ddev/commands/web/drush" status 2>&1)
+if ! echo "$DRUSH_SPECIAL_OUT" | grep -q -- "--uri=https://$SPECIAL_DIR.test-project.ddev.site"; then
+    echo "❌ Drush wrapper failed to generate sanitized URI for period branch! Got:"
+    echo "$DRUSH_SPECIAL_OUT"
+    exit 1
+fi
+
+cd "$HUB_DIR"
+"$GAR_BIN" remove -f "$SPECIAL_BRANCH"
+
+# Test additional special characters (_, +, @, multiple dots) and auto-healing of legacy dotted folder
+MULTI_BRANCH="feature/v1.2.3_rc+1@test"
+MULTI_DIR="feature-v1-2-3-rc-1-test"
+MULTI_DB="db_feature_v1_2_3_rc_1_test"
+"$GAR_BIN" switch -c "$MULTI_BRANCH" 3>/dev/null
+if [ ! -d "$HUB_DIR/$MULTI_DIR" ]; then
+    echo "❌ Multi-special-char branch directory not sanitized! Expected $MULTI_DIR"
+    exit 1
+fi
+if ! grep -q "CREATE DATABASE IF NOT EXISTS \`$MULTI_DB\`" "$TEST_DIR/ddev.log"; then
+    echo "❌ Database name for multi-special-char branch not sanitized! Expected $MULTI_DB"
+    exit 1
+fi
+"$GAR_BIN" remove -f "$MULTI_BRANCH"
+
+# Test auto-healing of a pre-existing worktree folder containing a period
+git worktree add bsph-release-2026-10.1 -b bsph/release-2026-10.1 2>/dev/null
+if [ -d "$HUB_DIR/bsph-release-2026-10.1" ]; then
+    "$GAR_BIN" switch bsph/release-2026-10.1 3>/dev/null
+    if [ ! -d "$HUB_DIR/bsph-release-2026-10-1" ] || [ -d "$HUB_DIR/bsph-release-2026-10.1" ]; then
+        echo "❌ Switch did not auto-heal dotted worktree directory to hyphens!"
+        exit 1
+    fi
+    if command -v php >/dev/null 2>&1; then
+        mkdir -p "$HUB_DIR/bsph-release-2026-10-1/docroot/modules/contrib/environment_indicator"
+        HEALED_ENV_NAME=$(php -r "
+            chdir('$HUB_DIR/bsph-release-2026-10-1/docroot/sites/default');
+            require 'settings.workspace.php';
+            echo isset(\$config['environment_indicator.indicator']['name']) ? \$config['environment_indicator.indicator']['name'] : 'none';
+        ")
+        if [ "$HEALED_ENV_NAME" != "bsph/release-2026-10.1" ]; then
+            echo "❌ settings.workspace.php did not resolve original branch name after worktree rename! Got '$HEALED_ENV_NAME'"
+            exit 1
+        fi
+    fi
+    "$GAR_BIN" remove -f bsph/release-2026-10.1
+fi
+
 echo "✅ Branch Names with Capitals and Case-Insensitive Routing passed!"
 
 # 12. Test: Pre-existing database detection on switch

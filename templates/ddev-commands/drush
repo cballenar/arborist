@@ -53,9 +53,10 @@ fi
 DEFAULT_BRANCH="${DEFAULT_BRANCH:-develop}"
 
 # If not found and at hub root, try default branch
-if [ -z "$DRUSH_PATH" ] && [ -x "$HUB_ROOT/$DEFAULT_BRANCH/vendor/bin/drush" ]; then
-    DRUSH_PATH="$HUB_ROOT/$DEFAULT_BRANCH/vendor/bin/drush"
-    [ -z "$WT_DIR" ] && WT_DIR="$HUB_ROOT/$DEFAULT_BRANCH"
+DEFAULT_WT=$(echo "$DEFAULT_BRANCH" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9]/-/g' -e 's/^-*//' -e 's/-*$//')
+if [ -z "$DRUSH_PATH" ] && [ -x "$HUB_ROOT/$DEFAULT_WT/vendor/bin/drush" ]; then
+    DRUSH_PATH="$HUB_ROOT/$DEFAULT_WT/vendor/bin/drush"
+    [ -z "$WT_DIR" ] && WT_DIR="$HUB_ROOT/$DEFAULT_WT"
 fi
 
 # Source worktree .env environment variables if present
@@ -106,10 +107,10 @@ if [ "$HAS_URI" = false ] && [ -n "$DDEV_PRIMARY_URL" ]; then
     BASE_DOMAIN="${DDEV_PRIMARY_URL#*://}"
     BASE_DOMAIN="${BASE_DOMAIN%%/*}"
 
-    NORM_WT=$(echo "$WT_NAME" | tr '[:upper:]' '[:lower:]')
-    NORM_DEF=$(echo "$DEFAULT_BRANCH" | tr '[:upper:]' '[:lower:]')
+    NORM_WT=$(echo "$WT_NAME" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9]/-/g' -e 's/^-*//' -e 's/-*$//')
+    NORM_DEF=$(echo "$DEFAULT_BRANCH" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9]/-/g' -e 's/^-*//' -e 's/-*$//')
     if [ -n "$WT_NAME" ] && [ "$NORM_WT" != "$NORM_DEF" ]; then
-        SUBDOMAIN=$(echo "$WT_NAME" | tr '/' '-' | tr '[:upper:]' '[:lower:]')
+        SUBDOMAIN="$NORM_WT"
         TARGET_URI="${SCHEME}://${SUBDOMAIN}.${BASE_DOMAIN}"
     else
         TARGET_URI="$DDEV_PRIMARY_URL"

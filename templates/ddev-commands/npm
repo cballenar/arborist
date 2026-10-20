@@ -73,8 +73,9 @@ if [ -z "$TARGET_NODE_PATH" ]; then
   fi
   if [ -z "$TARGET_NODE_PATH" ] && [ -f "/var/www/html/.arborist" ]; then
     DEFAULT_BRANCH=$(grep '^DEFAULT_BRANCH=' /var/www/html/.arborist | cut -d'=' -f2 | tr -d '"' || echo "develop")
+    DEFAULT_WT=$(echo "$DEFAULT_BRANCH" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9]/-/g' -e 's/^-*//' -e 's/-*$//')
     WEBROOT=$(grep '^WEBROOT=' /var/www/html/.arborist | cut -d'=' -f2 | tr -d '"' || echo "docroot")
-    for pkg in "/var/www/html/$DEFAULT_BRANCH/$WEBROOT"/themes/custom/*/package.json; do
+    for pkg in "/var/www/html/$DEFAULT_WT/$WEBROOT"/themes/custom/*/package.json; do
       if [ -f "$pkg" ]; then
         TARGET_NODE_PATH="$(dirname "$pkg")"
         break

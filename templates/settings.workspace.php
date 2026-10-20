@@ -25,14 +25,29 @@ elseif (PHP_SAPI === 'cli') {
 // 3. Resolve actual Git branch name (from worktree HEAD ref or fallback to folder name)
 $display_branch = $workspace_branch;
 $head_file = '/var/www/html/.git/worktrees/' . $workspace_branch . '/HEAD';
+$hub_dir = dirname(__DIR__, 4);
+if (!file_exists($head_file) && file_exists($hub_dir . '/.git/worktrees/' . $workspace_branch . '/HEAD')) {
+    $head_file = $hub_dir . '/.git/worktrees/' . $workspace_branch . '/HEAD';
+}
 if (!file_exists($head_file)) {
-    $hub_dir = dirname(__DIR__, 4);
-    if (file_exists($hub_dir . '/.git/worktrees/' . $workspace_branch . '/HEAD')) {
-        $head_file = $hub_dir . '/.git/worktrees/' . $workspace_branch . '/HEAD';
+    // Check worktree .git file (handles renamed/normalized worktrees where .git/worktrees/<id> differs from folder name)
+    foreach (['/var/www/html/' . $workspace_branch . '/.git', $hub_dir . '/' . $workspace_branch . '/.git', dirname(__DIR__, 3) . '/.git'] as $git_ptr) {
+        if (is_file($git_ptr)) {
+            $ptr_content = trim((string) @file_get_contents($git_ptr));
+            if (preg_match('#^gitdir:\s*(.+)$#m', $ptr_content, $ptr_matches)) {
+                $wt_id = basename(trim($ptr_matches[1]));
+                foreach (['/var/www/html/.git/worktrees/' . $wt_id . '/HEAD', $hub_dir . '/.git/worktrees/' . $wt_id . '/HEAD', trim($ptr_matches[1]) . '/HEAD'] as $cand_head) {
+                    if (file_exists($cand_head)) {
+                        $head_file = $cand_head;
+                        break 2;
+                    }
+                }
+            }
+        }
     }
 }
 if (!file_exists($head_file)) {
-    foreach (['/var/www/html/.git/worktrees', dirname(__DIR__, 4) . '/.git/worktrees'] as $wt_base) {
+    foreach (['/var/www/html/.git/worktrees', $hub_dir . '/.git/worktrees'] as $wt_base) {
         if (is_dir($wt_base)) {
             $entries = scandir($wt_base);
             if ($entries) {
@@ -151,7 +166,7 @@ if ($has_env_indicator) {
 
 // 6. Modify the database array if we are in a non-default branch
 if (!empty($workspace_branch) && strtolower($workspace_branch) !== strtolower('develop')) {
-    $db_name = 'db_' . strtolower(preg_replace('/[^a-zA-Z0-9_]/', '_', $workspace_branch));
+    $db_name = 'db_' . trim(strtolower(preg_replace('/[^a-zA-Z0-9_]/', '_', $workspace_branch)), '_');
     
     // Check if the isolated database actually exists (so we can fallback to the main db if it doesn't)
     $db_exists = false;

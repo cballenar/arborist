@@ -276,12 +276,12 @@ function check_hub_dir() {
 
 function get_db_name() {
     local branch="$1"
-    echo "db_$(echo "$branch" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_]/_/g')"
+    echo "db_$(echo "$branch" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9]/_/g' -e 's/^_*//' -e 's/_*$//')"
 }
 
 function get_wt_dir_name() {
     local branch="$1"
-    echo "$branch" | sed -e 's|^/||' -e 's|/$||' | tr '/' '-' | tr '[:upper:]' '[:lower:]'
+    echo "$branch" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9]/-/g' -e 's/^-*//' -e 's/-*$//'
 }
 
 function is_in_comma_list() {
@@ -402,7 +402,7 @@ function provision_drupal_worktree() {
 
     # 1. settings.workspace.php
     if [ -f "$TEMPLATES_DIR/settings.workspace.php" ]; then
-        sed "s/'develop'/'$DEFAULT_BRANCH'/g" "$TEMPLATES_DIR/settings.workspace.php" > "$site_dir/settings.workspace.php"
+        sed "s|'develop'|'$DEFAULT_BRANCH'|g" "$TEMPLATES_DIR/settings.workspace.php" > "$site_dir/settings.workspace.php"
     elif [ ! -f "$site_dir/settings.workspace.php" ] && [ -f "$def_site_dir/settings.workspace.php" ]; then
         cp "$def_site_dir/settings.workspace.php" "$site_dir/settings.workspace.php"
     fi
@@ -688,7 +688,7 @@ EOF
         if [ "$GAR_AUTO_YES" == "true" ] || { read -p "Auto-inject Arborist DB routing into $WEBROOT/sites/default/settings.local.php? [Y/n]: " inject_db </dev/tty && [[ "${inject_db:-Y}" =~ ^[Yy]$ ]]; }; then
             log "Injecting settings.workspace.php..."
             mkdir -p "$WEBROOT/sites/default"
-            sed "s/'develop'/'$DEFAULT_BRANCH'/g" "$TEMPLATES_DIR/settings.workspace.php" > "$WEBROOT/sites/default/settings.workspace.php"
+            sed "s|'develop'|'$DEFAULT_BRANCH'|g" "$TEMPLATES_DIR/settings.workspace.php" > "$WEBROOT/sites/default/settings.workspace.php"
             touch "$WEBROOT/sites/default/settings.local.php"
             if ! grep -q "settings.workspace.php" "$WEBROOT/sites/default/settings.local.php"; then
                 echo "" >> "$WEBROOT/sites/default/settings.local.php"
@@ -709,7 +709,7 @@ EOF
         log "Injecting wildcard Nginx config..."
         mkdir -p .ddev/nginx_full
         # Dynamically inject the webroot and default branch into the nginx template
-        local def_branch_nginx=$(echo "$DEFAULT_BRANCH" | tr '[:upper:]' '[:lower:]')
+        local def_branch_nginx=$(get_wt_dir_name "$DEFAULT_BRANCH")
         sed -e "s|/docroot|/$WEBROOT|g" -e "s|DEFAULT_BRANCH_PLACEHOLDER|$def_branch_nginx|g" "$TEMPLATES_DIR/workspace-nginx.conf" > .ddev/nginx_full/workspace-nginx.conf
 
         PROJECT_NAME=""
@@ -869,33 +869,36 @@ EOF
 
     # 2. Existing worktree directory or branch already checked out: switch into it
     local existing_wt=""
-    if [ -d "$target_wt_dir" ]; then
-        existing_wt="$HUB_DIR/$target_wt_dir"
-    elif [ -d "$BRANCH" ]; then
-        existing_wt="$HUB_DIR/$BRANCH"
-    else
-        local cur_parse_wt=""
-        while IFS= read -r line; do
-            if [[ "$line" =~ ^worktree[[:space:]]+(.*) ]]; then
-                cur_parse_wt="${BASH_REMATCH[1]}"
-            elif [[ "$line" =~ ^branch[[:space:]]+refs/heads/(.*) ]]; then
-                local parsed_branch="${BASH_REMATCH[1]}"
-                local parsed_dir_name
-                parsed_dir_name=$(get_wt_dir_name "$parsed_branch")
-                local norm_branch=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]')
-                local norm_parsed=$(echo "$parsed_branch" | tr '[:upper:]' '[:lower:]')
-                if [ "$parsed_branch" = "$BRANCH" ] || [ "$parsed_dir_name" = "$BRANCH" ] || [ "$norm_parsed" = "$norm_branch" ] || [ "$parsed_dir_name" = "$norm_branch" ]; then
-                    local rel_p="${cur_parse_wt##*/}"
-                    if [ -d "$HUB_DIR/$rel_p" ]; then
-                        existing_wt="$HUB_DIR/$rel_p"
-                    else
-                        existing_wt="$cur_parse_wt"
-                    fi
-                    BRANCH="$parsed_branch"
-                    break
+    local cur_parse_wt=""
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^worktree[[:space:]]+(.*) ]]; then
+            cur_parse_wt="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ ^branch[[:space:]]+refs/heads/(.*) ]]; then
+            local parsed_branch="${BASH_REMATCH[1]}"
+            local parsed_dir_name
+            parsed_dir_name=$(get_wt_dir_name "$parsed_branch")
+            local rel_p="${cur_parse_wt##*/}"
+            local norm_branch=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]')
+            local norm_parsed=$(echo "$parsed_branch" | tr '[:upper:]' '[:lower:]')
+            local norm_rel=$(echo "$rel_p" | tr '[:upper:]' '[:lower:]')
+            if [ "$parsed_branch" = "$BRANCH" ] || [ "$parsed_dir_name" = "$BRANCH" ] || [ "$rel_p" = "$BRANCH" ] || [ "$norm_parsed" = "$norm_branch" ] || [ "$parsed_dir_name" = "$norm_branch" ] || [ "$parsed_dir_name" = "$target_wt_dir" ] || [ "$norm_rel" = "$norm_branch" ]; then
+                if [ -d "$HUB_DIR/$rel_p" ]; then
+                    existing_wt="$HUB_DIR/$rel_p"
+                else
+                    existing_wt="$cur_parse_wt"
                 fi
+                BRANCH="$parsed_branch"
+                break
             fi
-        done < <(git worktree list --porcelain 2>/dev/null)
+        fi
+    done < <(git worktree list --porcelain 2>/dev/null)
+
+    if [ -z "$existing_wt" ]; then
+        if [ -d "$target_wt_dir" ]; then
+            existing_wt="$HUB_DIR/$target_wt_dir"
+        elif [ -d "$BRANCH" ]; then
+            existing_wt="$HUB_DIR/$BRANCH"
+        fi
     fi
 
     if [ -n "$existing_wt" ] && [ -d "$existing_wt" ]; then
@@ -905,6 +908,7 @@ EOF
             log "Normalizing worktree directory from '$cur_dir_name' to '$norm_dir_name'..."
             local tmp_mv="$HUB_DIR/.tmp_gar_renaming_$$"
             mv "$existing_wt" "$tmp_mv"
+            git worktree repair "$tmp_mv" >/dev/null 2>&1 || true
             mv "$tmp_mv" "$HUB_DIR/$norm_dir_name"
             git worktree repair "$HUB_DIR/$norm_dir_name" >/dev/null 2>&1 || true
             existing_wt="$HUB_DIR/$norm_dir_name"
@@ -2040,7 +2044,7 @@ EOF
 
         log "  • Updating Nginx wildcard configuration..."
         mkdir -p .ddev/nginx_full
-        local def_branch_nginx=$(echo "$DEFAULT_BRANCH" | tr '[:upper:]' '[:lower:]')
+        local def_branch_nginx=$(get_wt_dir_name "$DEFAULT_BRANCH")
         sed -e "s|/docroot|/$WEBROOT|g" -e "s|DEFAULT_BRANCH_PLACEHOLDER|$def_branch_nginx|g" "$TEMPLATES_DIR/workspace-nginx.conf" > .ddev/nginx_full/workspace-nginx.conf
 
         log "  • Verifying DDEV wildcard routing and docroot..."
@@ -2080,6 +2084,7 @@ EOF
                     log "    Normalizing worktree directory '$cur_dir_name' -> '$norm_dir_name'..."
                     local tmp_mv="$HUB_DIR/.tmp_gar_renaming_$$"
                     mv "$cur_wt" "$tmp_mv"
+                    git worktree repair "$tmp_mv" >/dev/null 2>&1 || true
                     mv "$tmp_mv" "$HUB_DIR/$norm_dir_name"
                     git worktree repair "$HUB_DIR/$norm_dir_name" >/dev/null 2>&1 || true
                     cur_wt="$HUB_DIR/$norm_dir_name"
@@ -2100,6 +2105,7 @@ EOF
             log "    Normalizing worktree directory '$cur_dir_name' -> '$norm_dir_name'..."
             local tmp_mv="$HUB_DIR/.tmp_gar_renaming_$$"
             mv "$cur_wt" "$tmp_mv"
+            git worktree repair "$tmp_mv" >/dev/null 2>&1 || true
             mv "$tmp_mv" "$HUB_DIR/$norm_dir_name"
             git worktree repair "$HUB_DIR/$norm_dir_name" >/dev/null 2>&1 || true
             cur_wt="$HUB_DIR/$norm_dir_name"
@@ -2178,12 +2184,39 @@ EOF
     local new_wt_dir=$(get_wt_dir_name "$NEW_BRANCH")
 
     local old_path=""
-    if [ -d "$OLD_BRANCH" ]; then
-        old_path="$OLD_BRANCH"
-    elif [ -d "$old_wt_dir" ]; then
-        old_path="$old_wt_dir"
-    else
-        error_exit "Worktree '$OLD_BRANCH' does not exist."
+    local norm_old=$(echo "$OLD_BRANCH" | tr '[:upper:]' '[:lower:]')
+    local cur_parse_wt=""
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^worktree[[:space:]]+(.*) ]]; then
+            cur_parse_wt="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ ^branch[[:space:]]+refs/heads/(.*) ]]; then
+            local b="${BASH_REMATCH[1]}"
+            local rel_wt="${cur_parse_wt#$HUB_DIR/}"
+            local sanitized_b
+            sanitized_b=$(get_wt_dir_name "$b")
+            local norm_b=$(echo "$b" | tr '[:upper:]' '[:lower:]')
+            local norm_rel=$(echo "$rel_wt" | tr '[:upper:]' '[:lower:]')
+            if [ "$b" = "$OLD_BRANCH" ] || [ "$rel_wt" = "$OLD_BRANCH" ] || [ "$sanitized_b" = "$OLD_BRANCH" ] || [ "$norm_b" = "$norm_old" ] || [ "$norm_rel" = "$norm_old" ] || [ "$sanitized_b" = "$old_wt_dir" ]; then
+                local rel_p="${cur_parse_wt##*/}"
+                if [ -d "$HUB_DIR/$rel_p" ]; then
+                    old_path="$rel_p"
+                else
+                    old_path="$rel_wt"
+                fi
+                OLD_BRANCH="$b"
+                break
+            fi
+        fi
+    done < <(git worktree list --porcelain 2>/dev/null)
+
+    if [ -z "$old_path" ]; then
+        if [ -d "$OLD_BRANCH" ]; then
+            old_path="$OLD_BRANCH"
+        elif [ -d "$old_wt_dir" ]; then
+            old_path="$old_wt_dir"
+        else
+            error_exit "Worktree '$OLD_BRANCH' does not exist."
+        fi
     fi
 
     if [ -d "$new_wt_dir" ] && [ "$old_path" != "$new_wt_dir" ]; then
@@ -2208,6 +2241,7 @@ EOF
     if [ "$old_path" != "$new_wt_dir" ]; then
         local tmp_mv="$HUB_DIR/.tmp_gar_renaming_$$"
         mv "$old_path" "$tmp_mv"
+        git worktree repair "$tmp_mv" > /dev/null 2>&1 || true
         mv "$tmp_mv" "$new_wt_dir"
     fi
     
