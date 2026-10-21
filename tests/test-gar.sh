@@ -165,6 +165,11 @@ if ! grep -q "PROTECTED_BRANCHES=" ".arborist" 2>/dev/null; then
     exit 1
 fi
 
+if [ ! -f ".ddev/mutagen/mutagen.yml" ] || ! grep -q "^# Managed by Git Arborist" ".ddev/mutagen/mutagen.yml" || ! grep -q '"/backups"' ".ddev/mutagen/mutagen.yml" || ! grep -q '"/\*/docroot/sites/default/files"' ".ddev/mutagen/mutagen.yml" || ! grep -q '"/\*\*/\.out"' ".ddev/mutagen/mutagen.yml"; then
+    echo "❌ Mutagen config failed: .ddev/mutagen/mutagen.yml not properly configured on init"
+    exit 1
+fi
+
 echo "✅ Init passed!"
 
 # 3.1 Test: Init without directory argument (infers from repo URL)
@@ -965,11 +970,31 @@ echo "=> Testing: gar sync (programmatic project update and healing)"
 rm -f "$HUB_DIR/.ddev/commands/web/drush"
 rm -f "$HUB_DIR/.ddev/commands/web/twig-debug"
 rm -f "$HUB_DIR/develop/docroot/sites/development.services.yml"
+echo "#ddev-generated" > "$HUB_DIR/.ddev/mutagen/mutagen.yml"
 
 SYNC_OUT=$("$GAR_BIN" sync 2>&1)
 if ! echo "$SYNC_OUT" | grep -q "Arborist hub synchronized successfully!"; then
     echo "❌ gar sync failed! Got:"
     echo "$SYNC_OUT"
+    exit 1
+fi
+
+if ! grep -q "^# Managed by Git Arborist" "$HUB_DIR/.ddev/mutagen/mutagen.yml" || ! grep -q '"/\*\*/\.out"' "$HUB_DIR/.ddev/mutagen/mutagen.yml"; then
+    echo "❌ gar sync did not overwrite #ddev-generated .ddev/mutagen/mutagen.yml!"
+    exit 1
+fi
+
+# Verify external DB_BACKUP_PATH is omitted from mutagen.yml while internal path is included
+sed -i.bak 's|DB_BACKUP_PATH="backups"|DB_BACKUP_PATH="/tmp/external-backups"|' "$HUB_DIR/.arborist"
+"$GAR_BIN" sync >/dev/null 2>&1
+if grep -q "external-backups" "$HUB_DIR/.ddev/mutagen/mutagen.yml" || grep -q '"/backups"' "$HUB_DIR/.ddev/mutagen/mutagen.yml"; then
+    echo "❌ gar sync included external DB_BACKUP_PATH in .ddev/mutagen/mutagen.yml!"
+    exit 1
+fi
+mv "$HUB_DIR/.arborist.bak" "$HUB_DIR/.arborist"
+"$GAR_BIN" sync >/dev/null 2>&1
+if ! grep -q '"/backups"' "$HUB_DIR/.ddev/mutagen/mutagen.yml"; then
+    echo "❌ gar sync did not restore internal /backups in .ddev/mutagen/mutagen.yml!"
     exit 1
 fi
 

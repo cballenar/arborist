@@ -496,6 +496,61 @@ EOF
     chmod +x "$hooks_dir/reference-transaction"
 }
 
+function configure_ddev_mutagen() {
+    local webroot="$1"
+    local backup_path="${2:-backups}"
+    local mutagen_file=".ddev/mutagen/mutagen.yml"
+
+    if [ ! -f "$TEMPLATES_DIR/mutagen.yml" ]; then
+        return 0
+    fi
+
+    # Only overwrite if missing, #ddev-generated, or managed by Arborist
+    if [ -f "$mutagen_file" ]; then
+        if ! grep -qE "^(#ddev-generated|# Managed by Git Arborist)" "$mutagen_file" 2>/dev/null; then
+            return 0
+        fi
+    fi
+
+    mkdir -p .ddev/mutagen
+
+    local hub_real
+    hub_real=$(pwd -P 2>/dev/null || pwd)
+    local resolved_backup="$backup_path"
+    if [[ "$resolved_backup" == "~/"* ]]; then
+        resolved_backup="$HOME/${resolved_backup#\~/}"
+    elif [ "$resolved_backup" = "~" ]; then
+        resolved_backup="$HOME"
+    fi
+
+    local clean_backup=""
+    if [[ "$resolved_backup" == /* ]]; then
+        if [[ "$resolved_backup" == "$hub_real/"* ]]; then
+            clean_backup="${resolved_backup#$hub_real/}"
+        elif [[ "$resolved_backup" == "$PWD/"* ]]; then
+            clean_backup="${resolved_backup#$PWD/}"
+        fi
+    else
+        resolved_backup="${resolved_backup#./}"
+        if [[ "$resolved_backup" != ".."* ]] && [[ "$resolved_backup" != *"/../"* ]]; then
+            clean_backup="$resolved_backup"
+        fi
+    fi
+
+    clean_backup="${clean_backup#/}"
+    clean_backup="${clean_backup%/}"
+
+    if [ -n "$clean_backup" ]; then
+        sed -e "s|/docroot|/$webroot|g" \
+            -e "s|/backups|/$clean_backup|g" \
+            "$TEMPLATES_DIR/mutagen.yml" > "$mutagen_file"
+    else
+        sed -e "s|/docroot|/$webroot|g" \
+            -e '/- "\/backups"/d' \
+            "$TEMPLATES_DIR/mutagen.yml" > "$mutagen_file"
+    fi
+}
+
 function cmd_install_hooks() {
     HUB_DIR=$(check_hub_dir)
     install_git_hooks "$HUB_DIR"
@@ -749,6 +804,9 @@ EOF
                 chmod +x ".ddev/commands/web/$(basename "$cmd_file")"
             done
         fi
+
+        log "Configuring DDEV Mutagen exclusions..."
+        configure_ddev_mutagen "$WEBROOT" "$DB_BACKUP_PATH"
     fi
 
     if [ "$GAR_AUTO_YES" != "true" ]; then
@@ -2013,6 +2071,7 @@ EOF
     DEFAULT_BRANCH=${DEFAULT_BRANCH:-develop}
     FRAMEWORK=${FRAMEWORK:-drupal}
     WEBROOT=${WEBROOT:-docroot}
+    DB_BACKUP_PATH=${DB_BACKUP_PATH:-backups}
 
     log "🌳 Synchronizing Arborist Hub configuration..."
 
@@ -2060,6 +2119,9 @@ EOF
         def_wt_dir=$(get_wt_dir_name "$DEFAULT_BRANCH")
         ddev config --additional-hostnames="*.$project_name" >/dev/null 2>&1 || true
         ddev config --docroot="$def_wt_dir/$WEBROOT" >/dev/null 2>&1 || true
+
+        log "  • Updating DDEV Mutagen configuration..."
+        configure_ddev_mutagen "$WEBROOT" "$DB_BACKUP_PATH"
     fi
 
     # 4. Sync and heal all active worktrees
