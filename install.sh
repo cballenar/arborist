@@ -52,6 +52,14 @@ fi
 
 DISPLAY_PROFILE="${PROFILE/#$HOME/~}"
 
+# Resolve symlink to real profile file if needed (e.g. dotfiles repository symlinks)
+TARGET_FILE="$PROFILE"
+while [ -L "$TARGET_FILE" ]; do
+    TARGET_DIR="$(cd "$(dirname "$TARGET_FILE")" >/dev/null 2>&1 && pwd -P)"
+    TARGET_FILE="$(readlink "$TARGET_FILE")"
+    [[ "$TARGET_FILE" != /* ]] && TARGET_FILE="$TARGET_DIR/$TARGET_FILE"
+done
+
 # Detect standard PATH directory for standalone executable (agents, scripts, subshells)
 CANDIDATE_DIRS=("/opt/homebrew/bin" "/usr/local/bin" "$HOME/.local/bin")
 STANDALONE_DIR=""
@@ -81,8 +89,8 @@ if [ "$UNINSTALL" = true ]; then
             rm -f "$d/arborist"
         fi
     done
-    if [ -f "$PROFILE" ] && grep -q "arborist.*hook\|gar.*hook\|wrapper\.sh" "$PROFILE" 2>/dev/null; then
-        sed -i.bak '/# Git Arborist/d; /arborist.*hook/d; /gar.*hook/d; /wrapper\.sh/d' "$PROFILE" && rm -f "$PROFILE.bak"
+    if [ -f "$TARGET_FILE" ] && grep -q "arborist.*hook\|gar.*hook\|wrapper\.sh" "$TARGET_FILE" 2>/dev/null; then
+        sed -i.bak '/# Git Arborist/d; /arborist.*hook/d; /gar.*hook/d; /wrapper\.sh/d' "$TARGET_FILE" && rm -f "$TARGET_FILE.bak"
         echo "Successfully removed from $DISPLAY_PROFILE and PATH!"
         echo ""
         echo "To apply changes immediately, run:"
@@ -100,7 +108,7 @@ echo "Target profile: $DISPLAY_PROFILE"
 echo ""
 
 ALREADY_INSTALLED=false
-if [ -f "$PROFILE" ] && grep -q "arborist.*hook\|gar.*hook\|wrapper\.sh" "$PROFILE" 2>/dev/null; then
+if [ -f "$TARGET_FILE" ] && grep -q "arborist.*hook\|gar.*hook\|wrapper\.sh" "$TARGET_FILE" 2>/dev/null; then
     ALREADY_INSTALLED=true
 fi
 
@@ -113,15 +121,15 @@ if [ "$ALREADY_INSTALLED" = true ]; then
             exit 0
         fi
     fi
-    sed -i.bak '/# Git Arborist/d; /arborist.*hook/d; /gar.*hook/d; /wrapper\.sh/d' "$PROFILE" && rm -f "$PROFILE.bak"
-    echo "" >> "$PROFILE"
-    echo "# Git Arborist" >> "$PROFILE"
-    echo "$HOOK_LINE" >> "$PROFILE"
+    sed -i.bak '/# Git Arborist/d; /arborist.*hook/d; /gar.*hook/d; /wrapper\.sh/d' "$TARGET_FILE" && rm -f "$TARGET_FILE.bak"
+    echo "" >> "$TARGET_FILE"
+    echo "# Git Arborist" >> "$TARGET_FILE"
+    echo "$HOOK_LINE" >> "$TARGET_FILE"
     echo "Successfully updated in $DISPLAY_PROFILE!"
 else
-    echo "" >> "$PROFILE"
-    echo "# Git Arborist" >> "$PROFILE"
-    echo "$HOOK_LINE" >> "$PROFILE"
+    echo "" >> "$TARGET_FILE"
+    echo "# Git Arborist" >> "$TARGET_FILE"
+    echo "$HOOK_LINE" >> "$TARGET_FILE"
     echo "Successfully appended to $DISPLAY_PROFILE!"
 fi
 

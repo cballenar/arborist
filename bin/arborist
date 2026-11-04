@@ -120,6 +120,72 @@ alias dbi="gar dbi"
 alias dbe="gar dbe"
 alias dbp="gar dbp"
 
+ddev() {
+    if [ "\$1" = "composer" ] || [ "\$1" = "co" ]; then
+        local _subcmd="\$1"
+        local _pass_through=false
+        local _arg
+        for _arg in "\${@:2}"; do
+            case "\$_arg" in
+                create-project|-h|--help|-d|--working-dir|-d*|--working-dir=*)
+                    _pass_through=true
+                    break
+                    ;;
+            esac
+        done
+        if [ "\$_pass_through" = false ]; then
+            local _hub_dir=""
+            local _cur="\$PWD"
+            while [ "\$_cur" != "/" ]; do
+                if { [ -d "\$_cur/.git" ] && [ -d "\$_cur/.ddev" ]; } || [ -f "\$_cur/.arborist" ]; then
+                    _hub_dir="\$_cur"
+                    break
+                fi
+                _cur=\$(dirname "\$_cur")
+            done
+            if [ -n "\$_hub_dir" ] && { [ -f "\$_hub_dir/.arborist" ] || [ ! -f "\$_hub_dir/composer.json" ]; }; then
+                local _wt_dir=""
+                local _top_wt=""
+                _cur="\$PWD"
+                while [ "\$_cur" != "\$_hub_dir" ] && [ "\$_cur" != "/" ]; do
+                    if [ -z "\$_wt_dir" ] && [ -f "\$_cur/composer.json" ]; then
+                        _wt_dir="\$_cur"
+                    fi
+                    local _parent
+                    _parent=\$(dirname "\$_cur")
+                    if [ "\$_parent" = "\$_hub_dir" ]; then
+                        _top_wt="\$_cur"
+                    fi
+                    _cur="\$_parent"
+                done
+                if [ -z "\$_wt_dir" ] && [ -n "\$_top_wt" ]; then
+                    _wt_dir="\$_top_wt"
+                fi
+                if [ -z "\$_wt_dir" ] && [ "\$PWD" = "\$_hub_dir" ]; then
+                    local _def_branch="develop"
+                    if [ -f "\$_hub_dir/.arborist" ]; then
+                        local _cfg_branch
+                        _cfg_branch=\$(grep '^DEFAULT_BRANCH=' "\$_hub_dir/.arborist" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'" || true)
+                        [ -n "\$_cfg_branch" ] && _def_branch="\$_cfg_branch"
+                    fi
+                    local _def_wt
+                    _def_wt=\$(echo "\$_def_branch" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9]/-/g' -e 's/^-*//' -e 's/-*$//')
+                    if [ -d "\$_hub_dir/\$_def_wt" ]; then
+                        _wt_dir="\$_hub_dir/\$_def_wt"
+                    fi
+                fi
+                if [ -n "\$_wt_dir" ] && [[ "\$_wt_dir" == "\$_hub_dir/"* ]]; then
+                    local _rel_wt="\${_wt_dir#\$_hub_dir/}"
+                    shift
+                    command ddev "\$_subcmd" --working-dir="/var/www/html/\$_rel_wt" "\$@"
+                    return \$?
+                fi
+            fi
+        fi
+    fi
+    command ddev "\$@"
+}
+
 # Shell completion for Zsh and Bash
 if [ -n "\$ZSH_VERSION" ]; then
     _gar_zsh_complete() {
@@ -322,6 +388,89 @@ function flush_env_sync() {
             ddev mutagen sync >/dev/null 2>&1 || true
         fi
     fi
+}
+
+function normalize_worktree_gitdir() {
+    local wt_dir="$1"
+    if [ -f "$wt_dir/.git" ]; then
+        local gitdir_line
+        gitdir_line=$(grep '^gitdir:' "$wt_dir/.git" 2>/dev/null || true)
+        local gitdir_path="${gitdir_line#gitdir:}"
+        gitdir_path="${gitdir_path#"${gitdir_path%%[![:space:]]*}"}"
+        if [[ "$gitdir_path" == /* ]] && [[ "$gitdir_path" == *"/.git/worktrees/"* ]]; then
+            local wt_id
+            wt_id=$(basename "$gitdir_path")
+            if [ -d "$wt_dir/../.git/worktrees/$wt_id" ]; then
+                echo "gitdir: ../.git/worktrees/$wt_id" > "$wt_dir/.git"
+            fi
+        fi
+    fi
+}
+
+function ddev() {
+    if [ "$1" = "composer" ] || [ "$1" = "co" ]; then
+        local _subcmd="$1"
+        local _pass_through=false
+        local _arg
+        for _arg in "${@:2}"; do
+            case "$_arg" in
+                create-project|-h|--help|-d|--working-dir|-d*|--working-dir=*)
+                    _pass_through=true
+                    break
+                    ;;
+            esac
+        done
+        if [ "$_pass_through" = false ]; then
+            local _hub_dir=""
+            local _cur="$PWD"
+            while [ "$_cur" != "/" ]; do
+                if { [ -d "$_cur/.git" ] && [ -d "$_cur/.ddev" ]; } || [ -f "$_cur/.arborist" ]; then
+                    _hub_dir="$_cur"
+                    break
+                fi
+                _cur=$(dirname "$_cur")
+            done
+            if [ -n "$_hub_dir" ] && { [ -f "$_hub_dir/.arborist" ] || [ ! -f "$_hub_dir/composer.json" ]; }; then
+                local _wt_dir=""
+                local _top_wt=""
+                _cur="$PWD"
+                while [ "$_cur" != "$_hub_dir" ] && [ "$_cur" != "/" ]; do
+                    if [ -z "$_wt_dir" ] && [ -f "$_cur/composer.json" ]; then
+                        _wt_dir="$_cur"
+                    fi
+                    local _parent
+                    _parent=$(dirname "$_cur")
+                    if [ "$_parent" = "$_hub_dir" ]; then
+                        _top_wt="$_cur"
+                    fi
+                    _cur="$_parent"
+                done
+                if [ -z "$_wt_dir" ] && [ -n "$_top_wt" ]; then
+                    _wt_dir="$_top_wt"
+                fi
+                if [ -z "$_wt_dir" ] && [ "$PWD" = "$_hub_dir" ]; then
+                    local _def_branch="develop"
+                    if [ -f "$_hub_dir/.arborist" ]; then
+                        local _cfg_branch
+                        _cfg_branch=$(grep '^DEFAULT_BRANCH=' "$_hub_dir/.arborist" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'" || true)
+                        [ -n "$_cfg_branch" ] && _def_branch="$_cfg_branch"
+                    fi
+                    local _def_wt
+                    _def_wt=$(echo "$_def_branch" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9]/-/g' -e 's/^-*//' -e 's/-*$//')
+                    if [ -d "$_hub_dir/$_def_wt" ]; then
+                        _wt_dir="$_hub_dir/$_def_wt"
+                    fi
+                fi
+                if [ -n "$_wt_dir" ] && [[ "$_wt_dir" == "$_hub_dir/"* ]]; then
+                    local _rel_wt="${_wt_dir#$_hub_dir/}"
+                    shift
+                    command ddev "$_subcmd" --working-dir="/var/www/html/$_rel_wt" "$@"
+                    return $?
+                fi
+            fi
+        fi
+    fi
+    command ddev "$@"
 }
 
 function get_latest_backup_file() {
@@ -759,6 +908,7 @@ EOF
         fi
     fi
     cd ..
+    normalize_worktree_gitdir "$PWD/$def_wt_dir"
 
     if [ "$ENV_ENGINE" == "ddev" ]; then
         log "Injecting wildcard Nginx config..."
@@ -786,12 +936,17 @@ EOF
         fi
 
         log "Updating DDEV hub docroot..."
-        ddev config --docroot="$def_wt_dir/$WEBROOT" || true
+        ddev config --docroot="$def_wt_dir/$WEBROOT" --composer-root="$def_wt_dir" || true
         if [ -f ".ddev/config.yaml" ]; then
             if grep -q "^docroot:" .ddev/config.yaml; then
                 sed "s|^docroot:.*|docroot: $def_wt_dir/$WEBROOT|" .ddev/config.yaml > .ddev/config.yaml.tmp && mv .ddev/config.yaml.tmp .ddev/config.yaml
             else
                 echo "docroot: $def_wt_dir/$WEBROOT" >> .ddev/config.yaml
+            fi
+            if grep -q "^composer_root:" .ddev/config.yaml; then
+                sed "s|^composer_root:.*|composer_root: $def_wt_dir|" .ddev/config.yaml > .ddev/config.yaml.tmp && mv .ddev/config.yaml.tmp .ddev/config.yaml
+            else
+                echo "composer_root: $def_wt_dir" >> .ddev/config.yaml
             fi
         fi
 
@@ -822,6 +977,7 @@ EOF
                 cd "$extra_wt_dir"
                 git sparse-checkout set --no-cone '/*' $SPARSE_EXCLUDES
                 cd ..
+                normalize_worktree_gitdir "$PWD/$extra_wt_dir"
                 if [ "$FRAMEWORK" == "drupal" ]; then
                     provision_drupal_worktree "$PWD/$extra_wt_dir"
                 fi
@@ -972,6 +1128,7 @@ EOF
             existing_wt="$HUB_DIR/$norm_dir_name"
             flush_env_sync
         fi
+        normalize_worktree_gitdir "$existing_wt"
         if [ "$FRAMEWORK" == "drupal" ]; then
             provision_drupal_worktree "$existing_wt"
         fi
@@ -1082,6 +1239,7 @@ EOF
     cd "$wt_dir_name"
     git sparse-checkout set --no-cone '/*' $SPARSE_EXCLUDES
     cd ..
+    normalize_worktree_gitdir "$HUB_DIR/$wt_dir_name"
     
     if [ "$FRAMEWORK" == "drupal" ]; then
         provision_drupal_worktree "$HUB_DIR/$wt_dir_name"
@@ -1234,6 +1392,8 @@ EOF
     
     source "$HUB_DIR/.arborist" 2>/dev/null || true
     ENV_ENGINE=${ENV_ENGINE:-ddev}
+    DEFAULT_BRANCH=${DEFAULT_BRANCH:-develop}
+    PROTECTED_BRANCHES=${PROTECTED_BRANCHES:-"$DEFAULT_BRANCH,develop,main,master,production,staging"}
 
     # Resolve worktree and branch
     local target_wt_dir
@@ -1278,6 +1438,64 @@ EOF
         fi
     fi
 
+    if [ "$branch_to_remove" == "$DEFAULT_BRANCH" ] || is_in_comma_list "$branch_to_remove" "$PROTECTED_BRANCHES"; then
+        error_exit "Cannot remove protected branch '$branch_to_remove'."
+    fi
+
+    local display_name="${wt_to_remove#$HUB_DIR/}"
+    local -a safety_warnings=()
+
+    if [ -d "$wt_to_remove" ]; then
+        local dirty_status
+        dirty_status=$(git -C "$wt_to_remove" status --porcelain 2>/dev/null || true)
+        if [ -n "$dirty_status" ]; then
+            safety_warnings+=("Worktree '$display_name' has uncommitted changes.")
+        fi
+    fi
+
+    if git show-ref --verify --quiet "refs/heads/$branch_to_remove" 2>/dev/null; then
+        local upstream_ref=""
+        local upstream_track=""
+        upstream_ref=$(git for-each-ref --format='%(upstream:short)' "refs/heads/$branch_to_remove" 2>/dev/null || true)
+        upstream_track=$(git for-each-ref --format='%(upstream:track)' "refs/heads/$branch_to_remove" 2>/dev/null || true)
+
+        local remote_compare_ref=""
+        if [ -n "$upstream_ref" ] && [ "$upstream_track" != "[gone]" ] && git show-ref --verify --quiet "refs/remotes/$upstream_ref" 2>/dev/null; then
+            remote_compare_ref="refs/remotes/$upstream_ref"
+        elif git show-ref --verify --quiet "refs/remotes/origin/$branch_to_remove" 2>/dev/null; then
+            remote_compare_ref="refs/remotes/origin/$branch_to_remove"
+        fi
+
+        if [ -z "$remote_compare_ref" ]; then
+            if [ "$upstream_track" != "[gone]" ]; then
+                safety_warnings+=("Branch '$branch_to_remove' only exists locally (never pushed to remote).")
+            fi
+        else
+            local ahead_count=0
+            ahead_count=$(git rev-list --count "${remote_compare_ref}..refs/heads/${branch_to_remove}" 2>/dev/null || echo 0)
+            if [ "$ahead_count" -gt 0 ]; then
+                safety_warnings+=("Branch '$branch_to_remove' has $ahead_count unpushed commit(s).")
+            fi
+        fi
+    fi
+
+    if [ ${#safety_warnings[@]} -gt 0 ] && [ "$FORCE" != true ] && [ "$GAR_AUTO_YES" != "true" ]; then
+        for warn_msg in "${safety_warnings[@]}"; do
+            echo "⚠️  Warning: $warn_msg" >&2
+        done
+        local confirm_remove="n"
+        if [ -t 0 ]; then
+            read -p "Are you sure you want to permanently delete this worktree and local branch? [y/N]: " confirm_remove </dev/tty || true
+        else
+            read -p "Are you sure you want to permanently delete this worktree and local branch? [y/N]: " confirm_remove || true
+        fi
+        confirm_remove=${confirm_remove:-N}
+        if [[ ! "$confirm_remove" =~ ^[Yy]$ ]]; then
+            log "Removal cancelled."
+            return 0
+        fi
+    fi
+
     DB_NAME=$(get_db_name "$branch_to_remove")
 
     if [ "$FORCE" = true ] || [ "$GAR_AUTO_YES" == "true" ]; then
@@ -1286,11 +1504,14 @@ EOF
             log "Auto-confirming database drop for tests."
         fi
     else
-        read -p "Drop the isolated database ($DB_NAME) if it exists? [Y/n]: " drop_db </dev/tty || true
+        if [ -t 0 ]; then
+            read -p "Drop the isolated database ($DB_NAME) if it exists? [Y/n]: " drop_db </dev/tty || true
+        else
+            read -p "Drop the isolated database ($DB_NAME) if it exists? [Y/n]: " drop_db || true
+        fi
         drop_db=${drop_db:-Y}
     fi
 
-    local display_name="${wt_to_remove#$HUB_DIR/}"
     log "Removing worktree '$display_name'..."
     git worktree remove --force "$wt_to_remove"
     git branch -D "$branch_to_remove" 2>/dev/null || true
@@ -2118,7 +2339,14 @@ EOF
         local def_wt_dir
         def_wt_dir=$(get_wt_dir_name "$DEFAULT_BRANCH")
         ddev config --additional-hostnames="*.$project_name" >/dev/null 2>&1 || true
-        ddev config --docroot="$def_wt_dir/$WEBROOT" >/dev/null 2>&1 || true
+        ddev config --docroot="$def_wt_dir/$WEBROOT" --composer-root="$def_wt_dir" >/dev/null 2>&1 || true
+        if [ -f ".ddev/config.yaml" ]; then
+            if grep -q "^composer_root:" .ddev/config.yaml; then
+                sed "s|^composer_root:.*|composer_root: $def_wt_dir|" .ddev/config.yaml > .ddev/config.yaml.tmp && mv .ddev/config.yaml.tmp .ddev/config.yaml
+            else
+                echo "composer_root: $def_wt_dir" >> .ddev/config.yaml
+            fi
+        fi
 
         log "  • Updating DDEV Mutagen configuration..."
         configure_ddev_mutagen "$WEBROOT" "$DB_BACKUP_PATH"
@@ -2151,6 +2379,7 @@ EOF
                     git worktree repair "$HUB_DIR/$norm_dir_name" >/dev/null 2>&1 || true
                     cur_wt="$HUB_DIR/$norm_dir_name"
                 fi
+                normalize_worktree_gitdir "$cur_wt"
                 if [ "$FRAMEWORK" == "drupal" ]; then
                     provision_drupal_worktree "$cur_wt"
                 fi
@@ -2172,6 +2401,7 @@ EOF
             git worktree repair "$HUB_DIR/$norm_dir_name" >/dev/null 2>&1 || true
             cur_wt="$HUB_DIR/$norm_dir_name"
         fi
+        normalize_worktree_gitdir "$cur_wt"
         if [ "$FRAMEWORK" == "drupal" ]; then
             provision_drupal_worktree "$cur_wt"
         fi
@@ -2309,6 +2539,7 @@ EOF
     
     # Repair git worktree paths
     git worktree repair "$new_wt_dir" > /dev/null 2>&1 || true
+    normalize_worktree_gitdir "$HUB_DIR/$new_wt_dir"
     
     # Move/mirror git branch
     git branch -m "$OLD_BRANCH" "$NEW_BRANCH"
