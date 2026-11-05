@@ -7,10 +7,15 @@ pub const config = @import("config.zig");
 pub const context = @import("context.zig");
 pub const git = @import("git.zig");
 pub const ddev = @import("engine/ddev.zig");
+pub const templates = @import("templates.zig");
+pub const prompt = @import("prompt.zig");
 
 const cmd_hook = @import("commands/hook.zig");
 const cmd_info = @import("commands/info.zig");
 const cmd_list = @import("commands/list.zig");
+const cmd_sync = @import("commands/sync.zig");
+const cmd_remove = @import("commands/remove.zig");
+const cmd_move = @import("commands/move.zig");
 
 const help_text =
     \\Git Arborist (gar) - Multi-worktree workspace manager
@@ -88,6 +93,32 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    if (std.mem.eql(u8, command, "sync") or
+        std.mem.eql(u8, command, "update") or
+        std.mem.eql(u8, command, "sync-ddev"))
+    {
+        try cmd_sync.run(&ctx, sub_args);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "install-hooks")) {
+        try cmd_sync.runInstallHooks(&ctx);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "remove")) {
+        try cmd_remove.run(&ctx, sub_args);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "move") or
+        std.mem.eql(u8, command, "mv") or
+        std.mem.eql(u8, command, "-m"))
+    {
+        try cmd_move.run(&ctx, sub_args);
+        return;
+    }
+
     ctx.errorExit("Unknown command: {s}\nRun 'gar -h' to see available commands.", .{command});
 }
 
@@ -97,4 +128,6 @@ test {
     _ = context;
     _ = git;
     _ = ddev;
+    _ = templates;
+    _ = prompt;
 }
