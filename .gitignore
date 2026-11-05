@@ -23,3 +23,7 @@ Thumbs.db
 # Local testing / Arborist Hub artifacts if tested locally
 .arborist
 .ddev/
+
+# Zig build artifacts
+.zig-cache/
+zig-out/

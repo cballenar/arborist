@@ -2,12 +2,18 @@
 # E2E Test Suite for Git Arborist (gar)
 set -e
 
+# Ensure Git author/committer identity is set in clean CI environments
+export GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-Arborist Test}"
+export GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-test@example.com}"
+export GIT_COMMITTER_NAME="${GIT_COMMITTER_NAME:-Arborist Test}"
+export GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-test@example.com}"
+
 # Setup paths
 TEST_DIR="/tmp/gar-test-env"
 REMOTE_REPO="$TEST_DIR/remote"
 HUB_DIR="$TEST_DIR/hub"
 MOCK_DB_FILE="$TEST_DIR/mock-dbs.txt"
-GAR_BIN="$(pwd)/bin/arborist"
+GAR_BIN="${GAR_BIN:-$(pwd)/bin/arborist}"
 
 echo "=== Git Arborist (gar) Test Suite ==="
 
@@ -150,6 +156,16 @@ if ! grep -q "^docroot: develop/docroot" ".ddev/config.yaml" 2>/dev/null; then
     exit 1
 fi
 
+if ! grep -q "^composer_root: develop" ".ddev/config.yaml" 2>/dev/null; then
+    echo "❌ Hub composer_root failed: composer_root not set to develop in .ddev/config.yaml"
+    exit 1
+fi
+
+if [ ! -f "develop/.git" ] || ! grep -q "^gitdir: \.\./\.git/worktrees/" "develop/.git"; then
+    echo "❌ Worktree .git normalization failed: develop/.git does not contain relative gitdir"
+    exit 1
+fi
+
 if [ ! -x ".git/hooks/post-merge" ] || [ ! -x ".git/hooks/reference-transaction" ]; then
     echo "❌ Git hooks installation failed: post-merge or reference-transaction hook missing/not executable"
     exit 1
@@ -162,6 +178,11 @@ fi
 
 if ! grep -q "PROTECTED_BRANCHES=" ".arborist" 2>/dev/null; then
     echo "❌ Config failed: PROTECTED_BRANCHES not set in .arborist"
+    exit 1
+fi
+
+if [ ! -f ".ddev/mutagen/mutagen.yml" ] || ! grep -q "^# Managed by Git Arborist" ".ddev/mutagen/mutagen.yml" || ! grep -q '"/backups"' ".ddev/mutagen/mutagen.yml" || ! grep -q '"/\*/docroot/sites/default/files"' ".ddev/mutagen/mutagen.yml" || ! grep -q '"/\*\*/\.out"' ".ddev/mutagen/mutagen.yml"; then
+    echo "❌ Mutagen config failed: .ddev/mutagen/mutagen.yml not properly configured on init"
     exit 1
 fi
 
@@ -241,15 +262,38 @@ echo "✅ Move passed!"
 # 6. Test: Remove
 echo ""
 echo "=> Testing: gar remove feature-3"
+
+# 6.1 Test: Protected branch cannot be removed
+if "$GAR_BIN" remove develop 2>/dev/null; then
+    echo "❌ Remove safety failed: allowed removing protected branch 'develop'"
+    exit 1
+fi
+
+# 6.2 Test: Local-only branch and uncommitted changes warn and default to No when unforced
+echo "uncommitted" > "$HUB_DIR/feature-3/dirty.txt"
+REMOVE_WARN_OUT=$(GAR_AUTO_YES=false "$GAR_BIN" remove feature-3 </dev/null 2>&1 || true)
+if ! echo "$REMOVE_WARN_OUT" | grep -q "only exists locally"; then
+    echo "❌ Remove safety failed: did not warn that feature-3 only exists locally"
+    exit 1
+fi
+if ! echo "$REMOVE_WARN_OUT" | grep -q "uncommitted changes"; then
+    echo "❌ Remove safety failed: did not warn about uncommitted changes in feature-3"
+    exit 1
+fi
+if [ ! -d "$HUB_DIR/feature-3" ]; then
+    echo "❌ Remove safety failed: deleted local-only dirty worktree without confirmation"
+    exit 1
+fi
+
 "$GAR_BIN" remove feature-3
 
-if [ -d "feature-2" ]; then
+if [ -d "feature-3" ]; then
     echo "❌ Remove failed: Directory still exists"
     exit 1
 fi
 
-if ! grep -q "DROP DATABASE IF EXISTS \`db_feature_2\`" "$TEST_DIR/ddev.log"; then
-    echo "❌ Database drop failed: sanitized db_feature_2 not found in ddev commands"
+if ! grep -q "DROP DATABASE IF EXISTS \`db_feature_3\`" "$TEST_DIR/ddev.log"; then
+    echo "❌ Database drop failed: sanitized db_feature_3 not found in ddev commands"
     exit 1
 fi
 
@@ -965,11 +1009,31 @@ echo "=> Testing: gar sync (programmatic project update and healing)"
 rm -f "$HUB_DIR/.ddev/commands/web/drush"
 rm -f "$HUB_DIR/.ddev/commands/web/twig-debug"
 rm -f "$HUB_DIR/develop/docroot/sites/development.services.yml"
+echo "#ddev-generated" > "$HUB_DIR/.ddev/mutagen/mutagen.yml"
 
 SYNC_OUT=$("$GAR_BIN" sync 2>&1)
 if ! echo "$SYNC_OUT" | grep -q "Arborist hub synchronized successfully!"; then
     echo "❌ gar sync failed! Got:"
     echo "$SYNC_OUT"
+    exit 1
+fi
+
+if ! grep -q "^# Managed by Git Arborist" "$HUB_DIR/.ddev/mutagen/mutagen.yml" || ! grep -q '"/\*\*/\.out"' "$HUB_DIR/.ddev/mutagen/mutagen.yml"; then
+    echo "❌ gar sync did not overwrite #ddev-generated .ddev/mutagen/mutagen.yml!"
+    exit 1
+fi
+
+# Verify external DB_BACKUP_PATH is omitted from mutagen.yml while internal path is included
+sed -i.bak 's|DB_BACKUP_PATH="backups"|DB_BACKUP_PATH="/tmp/external-backups"|' "$HUB_DIR/.arborist"
+"$GAR_BIN" sync >/dev/null 2>&1
+if grep -q "external-backups" "$HUB_DIR/.ddev/mutagen/mutagen.yml" || grep -q '"/backups"' "$HUB_DIR/.ddev/mutagen/mutagen.yml"; then
+    echo "❌ gar sync included external DB_BACKUP_PATH in .ddev/mutagen/mutagen.yml!"
+    exit 1
+fi
+mv "$HUB_DIR/.arborist.bak" "$HUB_DIR/.arborist"
+"$GAR_BIN" sync >/dev/null 2>&1
+if ! grep -q '"/backups"' "$HUB_DIR/.ddev/mutagen/mutagen.yml"; then
+    echo "❌ gar sync did not restore internal /backups in .ddev/mutagen/mutagen.yml!"
     exit 1
 fi
 
@@ -1113,6 +1177,75 @@ for cmd in switch info list move remove init sync prune hook; do
     fi
 done
 echo "✅ Help formatting and command-level -h passed!"
+
+# 17. Test: DDEV Composer Wrapper Routing and Worktree .git Normalization
+echo ""
+echo "=> Testing: DDEV Composer Wrapper Routing and Worktree .git Normalization"
+cd "$HUB_DIR"
+
+# Sourced hook definitions for testing
+eval "$("$GAR_BIN" hook)"
+
+# Switch to a feature worktree
+FEATURE_COMPOSER_BRANCH="feature/composer-test"
+FEATURE_COMPOSER_DIR="feature-composer-test"
+"$GAR_BIN" switch -c "$FEATURE_COMPOSER_BRANCH" 3>/dev/null
+
+if [ ! -f "$HUB_DIR/$FEATURE_COMPOSER_DIR/.git" ] || ! grep -q "^gitdir: \.\./\.git/worktrees/" "$HUB_DIR/$FEATURE_COMPOSER_DIR/.git"; then
+    echo "❌ Worktree .git normalization failed on switch: $FEATURE_COMPOSER_DIR/.git does not contain relative gitdir"
+    exit 1
+fi
+
+# Create a dummy composer.json in the feature worktree
+echo '{"name": "test/pkg"}' > "$HUB_DIR/$FEATURE_COMPOSER_DIR/composer.json"
+
+# Test ddev composer from worktree root
+cd "$HUB_DIR/$FEATURE_COMPOSER_DIR"
+ddev composer install --no-dev
+if ! grep -q "composer --working-dir=/var/www/html/$FEATURE_COMPOSER_DIR install --no-dev" "$TEST_DIR/ddev.log"; then
+    echo "❌ ddev composer wrapper failed to inject --working-dir from worktree root! Check ddev.log:"
+    tail -n 10 "$TEST_DIR/ddev.log"
+    exit 1
+fi
+
+# Test ddev co alias from subfolder
+mkdir -p "$HUB_DIR/$FEATURE_COMPOSER_DIR/docroot/modules/custom/test_mod"
+cd "$HUB_DIR/$FEATURE_COMPOSER_DIR/docroot/modules/custom/test_mod"
+ddev co require drupal/token
+if ! grep -q "co --working-dir=/var/www/html/$FEATURE_COMPOSER_DIR require drupal/token" "$TEST_DIR/ddev.log"; then
+    echo "❌ ddev co wrapper failed to detect worktree root from subdirectory! Check ddev.log:"
+    tail -n 10 "$TEST_DIR/ddev.log"
+    exit 1
+fi
+
+# Test ddev composer from Hub root (falls back to default branch develop)
+cd "$HUB_DIR"
+ddev composer install
+if ! grep -q "composer --working-dir=/var/www/html/develop install" "$TEST_DIR/ddev.log"; then
+    echo "❌ ddev composer wrapper failed to fallback to develop from Hub root! Check ddev.log:"
+    tail -n 10 "$TEST_DIR/ddev.log"
+    exit 1
+fi
+
+# Test ddev composer with explicit -d / --working-dir is untouched
+cd "$HUB_DIR/$FEATURE_COMPOSER_DIR"
+ddev composer --working-dir=/custom/path validate
+if ! grep -q "composer --working-dir=/custom/path validate" "$TEST_DIR/ddev.log"; then
+    echo "❌ ddev composer wrapper modified explicit --working-dir!"
+    exit 1
+fi
+
+# Test ddev composer create-project is untouched
+ddev composer create-project drupal/recommended-project /tmp/drupal
+if ! grep -q "composer create-project drupal/recommended-project /tmp/drupal" "$TEST_DIR/ddev.log"; then
+    echo "❌ ddev composer wrapper modified create-project command!"
+    exit 1
+fi
+
+# Clean up test worktree
+cd "$HUB_DIR"
+"$GAR_BIN" remove -f "$FEATURE_COMPOSER_BRANCH"
+echo "✅ DDEV Composer Wrapper Routing and Worktree .git Normalization passed!"
 
 echo ""
 echo "🎉 All tests passed successfully!"

@@ -1,0 +1,173 @@
+name: CI & Release
+
+on:
+  push:
+    branches: [main, master, develop]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Zig
+        run: |
+          ZIG_VERSION="$(tr -d '[:space:]' < .zigversion)"
+          case "$(uname -s)" in
+            Darwin) ZIG_OS="macos" ;;
+            Linux)  ZIG_OS="linux" ;;
+          esac
+          case "$(uname -m)" in
+            arm64|aarch64) ZIG_ARCH="aarch64" ;;
+            x86_64|amd64)  ZIG_ARCH="x86_64" ;;
+          esac
+          ZIG_DIR="$RUNNER_TEMP/zig-${ZIG_ARCH}-${ZIG_OS}-${ZIG_VERSION}"
+          mkdir -p "$ZIG_DIR"
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ZIG_ARCH}-${ZIG_OS}-${ZIG_VERSION}.tar.xz" \
+            | tar -xJ --strip-components=1 -C "$ZIG_DIR"
+          echo "$ZIG_DIR" >> "$GITHUB_PATH"
+
+      - name: Build binary
+        run: zig build
+
+      - name: Run Zig unit tests
+        run: zig build test
+
+      - name: Run E2E test suite
+        run: ./tests/test-gar.sh
+
+  release:
+    name: Build Release Binaries
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Zig
+        run: |
+          ZIG_VERSION="$(tr -d '[:space:]' < .zigversion)"
+          ZIG_DIR="$RUNNER_TEMP/zig-x86_64-linux-${ZIG_VERSION}"
+          mkdir -p "$ZIG_DIR"
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+            | tar -xJ --strip-components=1 -C "$ZIG_DIR"
+          echo "$ZIG_DIR" >> "$GITHUB_PATH"
+
+      - name: Cross-compile all release targets
+        run: |
+          mkdir -p dist
+
+          zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSmall
+          cp zig-out/bin/arborist dist/arborist-macos-aarch64
+
+          zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSmall
+          cp zig-out/bin/arborist dist/arborist-macos-x86_64
+
+          zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSmall
+          cp zig-out/bin/arborist dist/arborist-linux-x86_64
+
+          zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSmall
+          cp zig-out/bin/arborist dist/arborist-linux-aarch64
+
+          chmod +x dist/arborist-*
+          cd dist && sha256sum arborist-* > SHA256SUMS.txt
+
+      - name: Upload Release Artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: arborist-binaries
+          path: dist/*
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist/arborist-macos-aarch64
+            dist/arborist-macos-x86_64
+            dist/arborist-linux-x86_64
+            dist/arborist-linux-aarch64
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
+
+      - name: Update Homebrew Tap
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN not set; skipping automatic Homebrew tap update."
+            exit 0
+          fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          SHA_MACOS_ARM=$(awk '/arborist-macos-aarch64$/ {print $1}' dist/SHA256SUMS.txt)
+          SHA_MACOS_X86=$(awk '/arborist-macos-x86_64$/ {print $1}' dist/SHA256SUMS.txt)
+          SHA_LINUX_ARM=$(awk '/arborist-linux-aarch64$/ {print $1}' dist/SHA256SUMS.txt)
+          SHA_LINUX_X86=$(awk '/arborist-linux-x86_64$/ {print $1}' dist/SHA256SUMS.txt)
+
+          TAP_DIR="$RUNNER_TEMP/homebrew-tap"
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/cballenar/homebrew-tap.git" "$TAP_DIR"
+          cat > "$TAP_DIR/Formula/arborist.rb" <<EOF
+          class Arborist < Formula
+            desc "High-performance Git worktree and isolated database manager for local web development"
+            homepage "https://github.com/cballenar/arborist"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/cballenar/arborist/releases/download/v#{version}/arborist-macos-aarch64"
+                sha256 "${SHA_MACOS_ARM}"
+              else
+                url "https://github.com/cballenar/arborist/releases/download/v#{version}/arborist-macos-x86_64"
+                sha256 "${SHA_MACOS_X86}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/cballenar/arborist/releases/download/v#{version}/arborist-linux-aarch64"
+                sha256 "${SHA_LINUX_ARM}"
+              else
+                url "https://github.com/cballenar/arborist/releases/download/v#{version}/arborist-linux-x86_64"
+                sha256 "${SHA_LINUX_X86}"
+              end
+            end
+
+            def install
+              binary = Dir["arborist-*"].first || "arborist"
+              bin.install binary => "arborist"
+              bin.install_symlink "arborist" => "gar"
+            end
+
+            def caveats
+              <<~EOS
+                To enable automatic directory switching and tab completion, add this to your ~/.zshrc or ~/.bashrc:
+                  eval "\$(gar hook)"
+              EOS
+            end
+
+            test do
+              assert_match "Git Arborist", shell_output("#{bin}/gar --help")
+            end
+          end
+          EOF
+
+          cd "$TAP_DIR"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/arborist.rb
+          git diff --cached --quiet || (git commit -m "chore(arborist): bump to v${VERSION}" && git push)

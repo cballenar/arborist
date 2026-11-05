@@ -14,11 +14,13 @@ if (!empty($_SERVER['DDEV_WORKSPACE_BRANCH'])) {
 } 
 // 2. Check CLI Context (e.g. running Drush from inside a worktree)
 elseif (PHP_SAPI === 'cli') {
-    // __DIR__ is always /var/www/html/<branch_path>/<webroot>/sites/default (or /sites/default)
+    // __DIR__ is always /var/www/html/<branch_path>/<webroot>/sites/default (or <hub>/<branch_path>/<webroot>/sites/default on host)
     if (preg_match('#^/var/www/html/(.+?)(?:/(?:docroot|web|html|public_html|public))?/sites/#', __DIR__, $matches)) {
         $workspace_branch = $matches[1];
     } elseif (preg_match('#^/var/www/html/(.+?)(?:/(?:docroot|web|html|public_html|public))?(?:/|$)#', getcwd(), $matches)) {
         $workspace_branch = $matches[1];
+    } elseif (file_exists(dirname(__DIR__, 4) . '/.arborist') || is_dir(dirname(__DIR__, 4) . '/.git')) {
+        $workspace_branch = basename(dirname(__DIR__, 3));
     }
 }
 
