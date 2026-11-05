@@ -2,6 +2,12 @@
 # E2E Test Suite for Git Arborist (gar)
 set -e
 
+# Ensure Git author/committer identity is set in clean CI environments
+export GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-Arborist Test}"
+export GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-test@example.com}"
+export GIT_COMMITTER_NAME="${GIT_COMMITTER_NAME:-Arborist Test}"
+export GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-test@example.com}"
+
 # Setup paths
 TEST_DIR="/tmp/gar-test-env"
 REMOTE_REPO="$TEST_DIR/remote"

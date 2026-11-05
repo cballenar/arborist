@@ -2,7 +2,7 @@ name: CI & Release
 
 on:
   push:
-    branches: [main, master, develop, "feat/**"]
+    branches: [main, master, develop]
     tags: ["v*"]
   pull_request:
     branches: [main, master, develop]
@@ -40,7 +40,6 @@ jobs:
   release:
     name: Build Release Binaries
     needs: test
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
