@@ -16,6 +16,8 @@ const cmd_list = @import("commands/list.zig");
 const cmd_sync = @import("commands/sync.zig");
 const cmd_remove = @import("commands/remove.zig");
 const cmd_move = @import("commands/move.zig");
+const cmd_db = @import("commands/db.zig");
+const cmd_prune = @import("commands/prune.zig");
 
 const help_text =
     \\Git Arborist (gar) - Multi-worktree workspace manager
@@ -116,6 +118,31 @@ pub fn main(init: std.process.Init) !void {
         std.mem.eql(u8, command, "-m"))
     {
         try cmd_move.run(&ctx, sub_args);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "db")) {
+        try cmd_db.run(&ctx, sub_args);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "dbi")) {
+        try cmd_db.runAction(&ctx, "import", sub_args);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "dbe")) {
+        try cmd_db.runAction(&ctx, "export", sub_args);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "dbp")) {
+        try cmd_db.runAction(&ctx, "provision", sub_args);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "prune")) {
+        try cmd_prune.run(&ctx, sub_args);
         return;
     }
 
