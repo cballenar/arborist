@@ -358,17 +358,13 @@ fn resolveTargetDb(allocator: std.mem.Allocator, target_branch: []const u8, defa
 
 fn resolveUserFilePath(ctx: *const Context, file_arg: []const u8, create_parent: bool) ![]const u8 {
     const raw = if (std.mem.startsWith(u8, file_arg, "/"))
-        file_arg
+        try Dir.path.resolve(ctx.arena, &.{file_arg})
     else
-        try Dir.path.join(ctx.arena, &.{ ctx.invocation_dir, file_arg });
+        try Dir.path.resolve(ctx.arena, &.{ ctx.invocation_dir, file_arg });
 
     if (Dir.path.dirname(raw)) |parent| {
         if (create_parent) {
             try io_util.makePath(ctx.io, parent);
-        }
-        if (io_util.dirExists(ctx.io, parent)) {
-            const real_parent = try io_util.realPathOrCopy(ctx.arena, ctx.io, parent);
-            return Dir.path.join(ctx.arena, &.{ real_parent, Dir.path.basename(raw) });
         }
     }
     return raw;

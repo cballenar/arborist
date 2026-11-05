@@ -7,7 +7,7 @@ TEST_DIR="/tmp/gar-test-env"
 REMOTE_REPO="$TEST_DIR/remote"
 HUB_DIR="$TEST_DIR/hub"
 MOCK_DB_FILE="$TEST_DIR/mock-dbs.txt"
-GAR_BIN="$(pwd)/bin/arborist"
+GAR_BIN="${GAR_BIN:-$(pwd)/bin/arborist}"
 
 echo "=== Git Arborist (gar) Test Suite ==="
 

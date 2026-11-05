@@ -18,6 +18,8 @@ const cmd_remove = @import("commands/remove.zig");
 const cmd_move = @import("commands/move.zig");
 const cmd_db = @import("commands/db.zig");
 const cmd_prune = @import("commands/prune.zig");
+const cmd_switch = @import("commands/switch.zig");
+const cmd_init = @import("commands/init.zig");
 
 const help_text =
     \\Git Arborist (gar) - Multi-worktree workspace manager
@@ -50,7 +52,19 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
 
-    const invocation_dir = try std.process.currentPathAlloc(io, arena);
+    const invocation_dir = blk: {
+        const phys = try std.process.currentPathAlloc(io, arena);
+        if (init.environ_map.get("PWD")) |pwd_env| {
+            if (pwd_env.len > 0 and std.mem.startsWith(u8, pwd_env, "/")) {
+                if (std.Io.Dir.cwd().realPathFileAlloc(io, pwd_env, arena)) |real_pwd| {
+                    if (std.mem.eql(u8, real_pwd, phys)) {
+                        break :blk try arena.dupe(u8, std.mem.trimEnd(u8, pwd_env, "/"));
+                    }
+                } else |_| {}
+            }
+        }
+        break :blk phys;
+    };
     const exe_path = std.process.executablePathAlloc(io, arena) catch "arborist";
 
     const ctx = Context{
@@ -143,6 +157,16 @@ pub fn main(init: std.process.Init) !void {
 
     if (std.mem.eql(u8, command, "prune")) {
         try cmd_prune.run(&ctx, sub_args);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "switch")) {
+        try cmd_switch.run(&ctx, sub_args);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "init")) {
+        try cmd_init.run(&ctx, sub_args);
         return;
     }
 
