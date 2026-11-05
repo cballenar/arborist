@@ -42,14 +42,18 @@ Traditional single-directory branch hopping churns caches, invalidates build ass
 source ~/.zshrc   # or ~/.bashrc
 ```
 
+`install.sh` downloads the prebuilt native binary for your OS and architecture (`macos-aarch64`, `macos-x86_64`, `linux-x86_64`, `linux-aarch64`) from GitHub Releases into `~/.arborist/bin/arborist` (with automatic fallback to `zig build` if building from a local checkout).
+
 * Update/reinstall: `./install.sh -f`
+* Build and install from local source: `./install.sh --from-source`
+* Install a specific release version: `./install.sh --version v0.2.0`
 * Uninstall: `./install.sh --uninstall`
 
 ### Manual Installation
 
 Add the shell integration to your `~/.zshrc` or `~/.bashrc`:
 ```bash
-eval "$(/path/to/arborist/bin/arborist hook)"
+eval "$("$HOME/.arborist/bin/arborist" hook)"
 ```
 
 
@@ -166,9 +170,16 @@ POST_PROVISION_CMD="ddev drush updb -y && ddev drush cim -y && ddev drush cr && 
 
 ## Development & Testing
 
-Arborist includes an end-to-end (E2E) Bash test suite:
+Arborist is written in **Zig** (see [`.zigversion`](.zigversion)) with all templates embedded directly into the binary at compile time.
 
 ```bash
+# Compile the binary (outputs to zig-out/bin/arborist)
+zig build
+
+# Run unit tests
+zig build test
+
+# Run the end-to-end (E2E) test suite
 ./tests/test-gar.sh
 ```
 

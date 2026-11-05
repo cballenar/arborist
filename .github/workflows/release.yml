@@ -1,0 +1,89 @@
+name: CI & Release
+
+on:
+  push:
+    branches: [main, master, develop, "feat/**"]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+
+      - name: Build binary
+        run: zig build
+
+      - name: Run Zig unit tests
+        run: zig build test
+
+      - name: Run E2E test suite
+        run: ./tests/test-gar.sh
+
+  release:
+    name: Build Release Binaries
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+
+      - name: Cross-compile all release targets
+        run: |
+          mkdir -p dist
+
+          zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSmall
+          cp zig-out/bin/arborist dist/arborist-macos-aarch64
+
+          zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSmall
+          cp zig-out/bin/arborist dist/arborist-macos-x86_64
+
+          zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSmall
+          cp zig-out/bin/arborist dist/arborist-linux-x86_64
+
+          zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSmall
+          cp zig-out/bin/arborist dist/arborist-linux-aarch64
+
+          chmod +x dist/arborist-*
+          cd dist && sha256sum arborist-* > SHA256SUMS.txt
+
+      - name: Upload Release Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: arborist-binaries
+          path: dist/*
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/arborist-macos-aarch64
+            dist/arborist-macos-x86_64
+            dist/arborist-linux-x86_64
+            dist/arborist-linux-aarch64
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
