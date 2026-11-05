@@ -120,54 +120,43 @@ jobs:
 
           TAP_DIR="$RUNNER_TEMP/homebrew-tap"
           git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/cballenar/homebrew-tap.git" "$TAP_DIR"
-          cat > "$TAP_DIR/Formula/arborist.rb" <<EOF
-          class Arborist < Formula
+          mkdir -p "$TAP_DIR/Casks"
+          cat > "$TAP_DIR/Casks/arborist.rb" <<EOF
+          cask "arborist" do
+            arch arm: "aarch64", intel: "x86_64"
+            os macos: "macos", linux: "linux"
+
+            version "${VERSION}"
+            sha256 arm:          "${SHA_MACOS_ARM}",
+                   intel:        "${SHA_MACOS_X86}",
+                   arm64_linux:  "${SHA_LINUX_ARM}",
+                   x86_64_linux: "${SHA_LINUX_X86}"
+
+            url "https://github.com/cballenar/arborist/releases/download/v#{version}/arborist-#{os}-#{arch}"
+            name "Git Arborist"
             desc "High-performance Git worktree and isolated database manager for local web development"
             homepage "https://github.com/cballenar/arborist"
-            version "${VERSION}"
-            license "MIT"
 
-            on_macos do
-              if Hardware::CPU.arm?
-                url "https://github.com/cballenar/arborist/releases/download/v#{version}/arborist-macos-aarch64"
-                sha256 "${SHA_MACOS_ARM}"
-              else
-                url "https://github.com/cballenar/arborist/releases/download/v#{version}/arborist-macos-x86_64"
-                sha256 "${SHA_MACOS_X86}"
+            container type: :naked
+
+            binary "arborist-#{os}-#{arch}", target: "arborist"
+            binary "arborist-#{os}-#{arch}", target: "gar"
+
+            postflight_steps do
+              on_macos do
+                run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{staged_path}}"], must_succeed: false
               end
             end
 
-            on_linux do
-              if Hardware::CPU.arm?
-                url "https://github.com/cballenar/arborist/releases/download/v#{version}/arborist-linux-aarch64"
-                sha256 "${SHA_LINUX_ARM}"
-              else
-                url "https://github.com/cballenar/arborist/releases/download/v#{version}/arborist-linux-x86_64"
-                sha256 "${SHA_LINUX_X86}"
-              end
-            end
-
-            def install
-              binary = Dir["arborist-*"].first || "arborist"
-              bin.install binary => "arborist"
-              bin.install_symlink "arborist" => "gar"
-            end
-
-            def caveats
-              <<~EOS
-                To enable automatic directory switching and tab completion, add this to your ~/.zshrc or ~/.bashrc:
-                  eval "\$(gar hook)"
-              EOS
-            end
-
-            test do
-              assert_match "Git Arborist", shell_output("#{bin}/gar --help")
-            end
+            caveats <<~EOS
+              To enable automatic directory switching (\`gar switch\`) and tab completion, add this to your ~/.zshrc or ~/.bashrc:
+                eval "\$(gar hook)"
+            EOS
           end
           EOF
 
           cd "$TAP_DIR"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/arborist.rb
+          git add Casks/arborist.rb
           git diff --cached --quiet || (git commit -m "chore(arborist): bump to v${VERSION}" && git push)
