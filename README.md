@@ -37,24 +37,44 @@ Traditional single-directory branch hopping churns caches, invalidates build ass
 
 ## Installation
 
+### Homebrew (macOS & Linux)
+
+```bash
+brew install cballenar/tap/arborist
+```
+
+Then add the shell integration hook to your `~/.zshrc` or `~/.bashrc`:
+
+```bash
+eval "$(gar hook)"
+```
+
+To upgrade later:
+```bash
+brew upgrade arborist
+```
+
+### Installer Script
+
+You can also install directly from GitHub Releases (or from a local checkout) using `install.sh`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cballenar/arborist/main/install.sh | bash
+```
+
+Or from a cloned repository:
+
 ```bash
 ./install.sh
 source ~/.zshrc   # or ~/.bashrc
 ```
 
-`install.sh` downloads the prebuilt native binary for your OS and architecture (`macos-aarch64`, `macos-x86_64`, `linux-x86_64`, `linux-aarch64`) from GitHub Releases into `~/.arborist/bin/arborist` (with automatic fallback to `zig build` if building from a local checkout).
+`install.sh` downloads the prebuilt native binary for your OS and architecture (`macos-aarch64`, `macos-x86_64`, `linux-x86_64`, `linux-aarch64`) from GitHub Releases into `~/.arborist/bin/arborist` (with automatic fallback to `zig build` if building from a local checkout) and configures your shell RC automatically.
 
 * Update/reinstall: `./install.sh -f`
 * Build and install from local source: `./install.sh --from-source`
-* Install a specific release version: `./install.sh --version v0.2.0`
+* Install a specific release version: `./install.sh --version v2.0.0`
 * Uninstall: `./install.sh --uninstall`
-
-### Manual Installation
-
-Add the shell integration to your `~/.zshrc` or `~/.bashrc`:
-```bash
-eval "$("$HOME/.arborist/bin/arborist" hook)"
-```
 
 
 ## Usage
@@ -113,11 +133,11 @@ gar move old-branch-name new-branch-name
 
 ### Remove Worktree (`gar remove`)
 
-Remove a worktree, delete its Git branch, and drop its isolated database.
+Remove a worktree, delete its Git branch, and drop its isolated database. Protects default/protected branches and refuses to delete worktrees with uncommitted changes or unpushed local commits unless `-f` is passed.
 
 ```bash
 gar remove feature-branch
-gar remove -f feature-branch        # skip prompt and force drop database
+gar remove -f feature-branch        # skip prompt and force drop worktree & database
 ```
 
 ### Database Management (`gar db`, `gar dbi`, `gar dbe`, `gar dbp`)
@@ -150,6 +170,11 @@ gar prune -f                        # force cleanup without prompt
 gar prune --dry-run                 # preview without deleting
 ```
 
+### Worktree-Aware DDEV Commands & `.env` Isolation
+
+* **`ddev drush` & `ddev composer` (`ddev co`):** Running `ddev drush` or `ddev composer` from inside any worktree automatically executes inside that worktree's container path (`/var/www/html/<worktree>`).
+* **`.env` / `.env.local` Isolation:** During `gar init` and `gar switch`, if a worktree contains `.env.example` without a `.env` file, Arborist automatically scaffolds an isolated `.env` for that worktree.
+
 ### Project Configuration (`.arborist`)
 
 Project-specific settings reside in `.arborist` at the root of the Hub:
@@ -181,6 +206,15 @@ zig build test
 
 # Run the end-to-end (E2E) test suite
 ./tests/test-gar.sh
+```
+
+### Releasing a New Version
+
+Tagging a `v*` version and pushing it to GitHub triggers `.github/workflows/release.yml` to run the test suite across Ubuntu and macOS, cross-compile all four release binaries, publish the GitHub Release, and update `cballenar/homebrew-tap`:
+
+```bash
+git tag v2.0.0
+git push origin v2.0.0
 ```
 
 

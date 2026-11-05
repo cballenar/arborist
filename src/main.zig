@@ -21,6 +21,8 @@ const cmd_prune = @import("commands/prune.zig");
 const cmd_switch = @import("commands/switch.zig");
 const cmd_init = @import("commands/init.zig");
 
+const version_string = "2.0.0";
+
 const help_text =
     \\Git Arborist (gar) - Multi-worktree workspace manager
     \\
@@ -43,6 +45,7 @@ const help_text =
     \\  sync                 Re-apply templates, hooks, and command wrappers to the Hub
     \\  prune [-f|--dry-run] Clean up orphaned worktrees, branches, and databases
     \\  hook                 Output shell integration hook for eval in ~/.zshrc or ~/.bashrc
+    \\  version              Print version information (--version, -v)
     \\
     \\Run 'gar <command> -h' for details on a specific command.
     \\
@@ -86,6 +89,14 @@ pub fn main(init: std.process.Init) !void {
         std.mem.eql(u8, command, "help"))
     {
         ctx.outRaw(help_text);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "-v") or
+        std.mem.eql(u8, command, "--version") or
+        std.mem.eql(u8, command, "version"))
+    {
+        ctx.out("Git Arborist (gar) v{s}", .{version_string});
         return;
     }
 
