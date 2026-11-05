@@ -183,7 +183,7 @@ if [ "$INSTALLED_BINARY" = false ]; then
     if [ -n "$REPO_DIR" ] && [ -f "$REPO_DIR/build.zig" ]; then
         if command -v zig >/dev/null 2>&1; then
             echo "🔨 Building Git Arborist from source with Zig..."
-            (cd "$REPO_DIR" && zig build)
+            (cd "$REPO_DIR" && zig build -Doptimize=ReleaseFast)
             cp "$REPO_DIR/zig-out/bin/arborist" "$BIN_PATH"
             chmod +x "$BIN_PATH"
             INSTALLED_BINARY=true
